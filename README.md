@@ -34,7 +34,7 @@ You need a Railway account and about ten minutes.
 
 1. **Create a bot**: in Telegram open [@BotFather](https://t.me/BotFather), `/newbot`, and copy the token.
 2. **Find your Telegram id**: open [@userinfobot](https://t.me/userinfobot) and copy the number. A `@username` does not work.
-3. **Deploy**: in Railway create a project, add **PostgreSQL**, then add a service from this GitHub repo. It builds the `Dockerfile`, and on every start runs migrations and loads the reference data. `railway.toml` sets the health check and restart policy.
+3. **Deploy**: in Railway create a project, add **PostgreSQL**, then add a service from this GitHub repo. Railway builds the `Dockerfile`; on every start the container runs migrations and loads the reference data. In the service settings set the healthcheck path to `/healthz`.
 4. **Generate a public domain** for the service (Settings → Networking) and set the variables below.
 5. Open your bot and press **Start**. On start the app registers the Telegram webhook by itself.
 

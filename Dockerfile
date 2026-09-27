@@ -1,4 +1,4 @@
-# Railway builds this (builder DOCKERFILE, set in railway.toml). Keep COPY in sync
+# Railway picks this up by itself. Keep COPY in sync
 # with what runs in production: the package, migrations and alembic.ini.
 FROM python:3.12-slim
 
