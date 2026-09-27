@@ -114,7 +114,7 @@ class Import(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
     source: Mapped[str] = mapped_column(String(24))
-    origin: Mapped[str] = mapped_column(String(16))  # telegram / email / api / cli
+    origin: Mapped[str] = mapped_column(String(16))  # telegram / api / cli
     filename: Mapped[str | None] = mapped_column(String(255))
     file_sha256: Mapped[str] = mapped_column(String(64), unique=True)
     period_from: Mapped[date | None] = mapped_column(Date)
@@ -186,20 +186,6 @@ class Transaction(Base):
         return self.account.currency
 
 
-class MailMessage(Base):
-    """Every mail the poller looked at, so each is processed once."""
-
-    __tablename__ = "mail_messages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message_id: Mapped[str] = mapped_column(String(512), unique=True)
-    sender: Mapped[str] = mapped_column(String(255))
-    subject: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(16))  # imported / skipped / error
-    detail: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class JobRun(Base):
     """Guards scheduled reports against double sending after restarts."""
 
@@ -210,29 +196,3 @@ class JobRun(Base):
     job: Mapped[str] = mapped_column(String(32))
     period_key: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-# Receipt.status
-RECEIPT_NEW, RECEIPT_MATCHED, RECEIPT_NO_MATCH, RECEIPT_IGNORED = "new", "matched", "no_match", "ignored"
-
-
-class Receipt(Base):
-    """A receipt email (Grab, Shopee, ...) forwarded by the Gmail Apps Script.
-
-    The daily categorization agent matches it to a ledger row by amount and
-    date, sets the category and leaves a short summary as the row's note.
-    """
-
-    __tablename__ = "receipts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message_id: Mapped[str] = mapped_column(String(255), unique=True)
-    sender: Mapped[str] = mapped_column(String(255))
-    subject: Mapped[str] = mapped_column(Text, default="")
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    body: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(12), default=RECEIPT_NEW, server_default=RECEIPT_NEW, index=True)
-    transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id", ondelete="SET NULL"))
-    summary: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

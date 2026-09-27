@@ -9,7 +9,7 @@ It is **single-user**: everyone deploys their own copy. Your statements stay in 
 ```
 statements ──► parsers ──► ledger (Postgres) ──► reports ──► Telegram bot / weekly & monthly messages
   PDF/CSV from          dedup, rules,              │
-  bot / mail / API      transfers, pots           └──► dashboard (/)
+  bot / API            transfers, pots           └──► dashboard (/)
 Apple Pay events ──► pending rows, confirmed by the statement later
 ```
 
@@ -47,12 +47,11 @@ You need a Railway account and about ten minutes.
 | `SECRET_KEY` | a long random string, signs dashboard logins |
 | `API_TOKEN` | a long random string, for the CLI and integrations |
 | `TELEGRAM_WEBHOOK_SECRET` | required: random letters and digits (Telegram's rule). Without it the webhook is not registered |
-| `SCHEDULER_ENABLED` | `true`: weekly and monthly reports, mail polling |
+| `SCHEDULER_ENABLED` | `true`: weekly and monthly reports |
 | `TZ_NAME` | `Asia/Kuala_Lumpur` |
 | `MONTH_START_DAY` | `1` for calendar months, or the day after your payday (salary on the 25th → `26`) |
 | `OWNER_NAME` | optional: your name as the bank prints it, so transfers to yourself pair up |
 | `TNG_PDF_PASSWORD`, `MAYBANK_PDF_PASSWORD` | optional: lets the bot open protected statements |
-| `IMAP_USER`, `IMAP_PASSWORD` | optional: import statements from Gmail (see below) |
 
 Railway bills by usage. After the trial, the Hobby plan covers one small service plus Postgres.
 
@@ -72,20 +71,9 @@ Months are **financial months**. With `MONTH_START_DAY=26` a month runs from the
 
 ## Optional integrations
 
-### Statements from Gmail
+### A daily categorization agent
 
-Both options end in the same import, followed by a message in the bot.
-
-- **Apps Script (recommended)**: `integrations/gmail-apps-script/Code.gs` runs inside your Google account every 30 minutes. It uploads PDF and CSV attachments from TNG and Maybank senders to `POST /api/imports` and labels the thread `finance-imported`. It needs only `FINANCE_API_URL` and `API_TOKEN` in the script properties, and no Google credentials leave Google.
-- **IMAP**: the built-in poller. Set `IMAP_USER` and a Google *app password* in `IMAP_PASSWORD`; this requires 2-Step Verification.
-
-### Receipts and a daily categorization agent
-
-The Apps Script also forwards purchase emails as text to `POST /api/receipts`. A scheduled [Claude Code](https://claude.com/claude-code) routine following `integrations/receipts-routine/PROMPT.md` then:
-
-1. matches receipts to ledger rows;
-2. sets categories and short notes (`GrabFood · Nasi Lemak`);
-3. categorizes what is left, and reports to the bot.
+A scheduled [Claude Code](https://claude.com/claude-code) routine following `integrations/categorization-routine/PROMPT.md` categorizes rows the rules did not recognize, adds a short note, and reports to the bot.
 
 The agent endpoints refuse transfers and payments to people: those stay your decision. The routine needs `FINANCE_API_URL` and `API_TOKEN`.
 
@@ -138,7 +126,7 @@ finance parse statement.pdf               # parsed rows as JSON, no DB
 finance import statement.pdf              # into DATABASE_URL
 finance import statement.csv --api https://<service>.up.railway.app   # upload to the deployed API (API_TOKEN)
 finance report lastweek --send            # print and send to Telegram
-finance job weekly|monthly|mail [--force] # the scheduled jobs, e.g. for a Railway cron
+finance job weekly|monthly [--force]      # the scheduled jobs, e.g. for a Railway cron
 echo '{"amount": "RM12.50", "merchant": "ZUS"}' | finance event --stdin   # a card payment from the phone
 ```
 
@@ -155,9 +143,6 @@ Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. M
 | POST | `/api/transactions/{id}/fx` | `{rub_amount}`: mark as a transfer to the ruble account |
 | POST | `/api/imports` | multipart `file` (+ `account`) |
 | POST | `/api/events` | `{amount, merchant, account or card}`: Apple Pay automation, token only |
-| POST | `/api/receipts` | receipt email from the Apps Script (idempotent by `message_id`), token only |
-| GET | `/api/receipts?status=new` | receipts waiting for the agent |
-| POST | `/api/receipts/{id}/resolve` | `{status: matched/no_match/ignored, transaction_id, category, summary}`, token only |
 | POST | `/api/agent/categorize` | `{transaction_id, category, note, remember}`; refuses transfers, token only |
 | POST | `/api/notify` | `{text}` → a Telegram message to the owner, token only |
 | POST | `/telegram/webhook` | Telegram |

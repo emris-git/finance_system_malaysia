@@ -486,7 +486,7 @@ async def daily_series(session: AsyncSession, start: date, end: date, currency: 
 
 
 def format_import(r) -> str:
-    """Bot/mail message for a finance.ledger.ImportResult."""
+    """Bot message for a finance.ledger.ImportResult."""
     start, end = r.period
     period = f": {fmt_range(start, end)}" if start and end else ""
     if r.already_imported and not (r.new or r.refreshed or r.to_pots):

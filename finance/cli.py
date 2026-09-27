@@ -5,7 +5,7 @@
     finance import FILE [--account CODE] import into the DB named by DATABASE_URL
     finance import FILE --api URL        upload to a deployed API (needs API_TOKEN)
     finance report week|lastweek|month [--send]
-    finance job weekly|monthly|mail [--force]
+    finance job weekly|monthly [--force]
     finance event --stdin                card payment from the iPhone (Apple Pay automation over SSH)
     finance link                         dashboard login link (valid 15 min)
     finance demo                         fill an empty DB with sample data
@@ -104,12 +104,8 @@ async def _report(args) -> None:
 async def _job(args) -> None:
     from finance import jobs
 
-    if args.name == "weekly":
-        print("sent" if await jobs.send_weekly_report(args.force) else "already sent")
-    elif args.name == "monthly":
-        print("sent" if await jobs.send_monthly_report(args.force) else "already sent")
-    else:
-        print("imported files:", await jobs.poll_mail())
+    job = jobs.send_weekly_report if args.name == "weekly" else jobs.send_monthly_report
+    print("sent" if await job(args.force) else "already sent")
 
 
 async def _event(args) -> None:
@@ -195,7 +191,7 @@ def main() -> None:
     p.add_argument("period", choices=["week", "lastweek", "month"])
     p.add_argument("--send", action="store_true", help="also send to Telegram")
     p = sub.add_parser("job")
-    p.add_argument("name", choices=["weekly", "monthly", "mail"])
+    p.add_argument("name", choices=["weekly", "monthly"])
     p.add_argument("--force", action="store_true")
     p = sub.add_parser("event", help="card payment pushed from the phone")
     p.add_argument("--stdin", action="store_true", help="read the transaction (JSON or key: value lines) from stdin")

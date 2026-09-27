@@ -31,13 +31,6 @@ class Settings(BaseSettings):
     TNG_PDF_PASSWORD: str | None = None
     MAYBANK_PDF_PASSWORD: str | None = None
 
-    IMAP_HOST: str = "imap.gmail.com"
-    IMAP_USER: str | None = None
-    IMAP_PASSWORD: str | None = None
-    IMAP_FOLDER: str = "INBOX"
-    MAIL_SENDERS: str = "tngdigital.com.my,touchngo.com.my,maybank2u.com.my,maybank.com"
-    MAIL_LOOKBACK_DAYS: int = 14
-
     SCHEDULER_ENABLED: bool = False
 
     # First day of the "financial month". Salary lands on the 25th, so a month
@@ -72,10 +65,6 @@ class Settings(BaseSettings):
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.TZ_NAME)
-
-    @property
-    def mail_senders(self) -> list[str]:
-        return [s.strip().lower() for s in self.MAIL_SENDERS.split(",") if s.strip()]
 
     @property
     def pdf_passwords(self) -> list[str]:

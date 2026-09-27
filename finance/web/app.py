@@ -8,10 +8,10 @@ import json
 import logging
 from html import escape
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from finance import agent, ledger, reports
 from finance.config import get_settings
 from finance.db import get_db
-from finance.models import PENDING, REVIEW_UNCATEGORIZED, Account, Category, Receipt, Transaction
+from finance.models import PENDING, REVIEW_UNCATEGORIZED, Account, Category, Transaction
 from finance.parsers import MAX_FILE_BYTES, ParseError, parse_file
 from finance.quick_entry import parse_device_event
 from finance.utils import cycle_bounds, parse_amount, to_decimal, today
@@ -344,13 +344,9 @@ async def api_import(
             session, statement, origin=origin[:16], filename=file.filename, file_bytes=data
         )
     except (ParseError, ledger.LedgerError) as exc:
-        if origin == "email":
-            # the Gmail script runs unattended; the bot is where a failure gets noticed
-            _spawn(notify_owner(f"📧 Не смог разобрать вложение «{escape(file.filename or '')}» из почты: {escape(str(exc))}"))
         raise HTTPException(400, str(exc)) from exc
     if not result.already_imported:
-        prefix = "📧 Из почты\n" if origin == "email" else ""
-        _spawn(notify_owner(prefix + reports.format_import(result) + ("\n/review" if result.to_review else "")))
+        _spawn(notify_owner(reports.format_import(result) + ("\n/review" if result.to_review else "")))
     return {
         "account": result.account_name,
         "new": result.new,
@@ -419,22 +415,6 @@ async def api_event(request: Request, session: DB):
 # --- categorization agent (Claude routine) -----------------------------------
 
 
-class ReceiptIn(BaseModel):
-    message_id: str
-    sender: str
-    subject: str = ""
-    received_at: datetime
-    body: str = ""
-
-
-class ReceiptResolve(BaseModel):
-    status: Literal["matched", "no_match", "ignored"]
-    transaction_id: int | None = None
-    category: str | None = None
-    summary: str | None = None
-    remember: bool = False
-
-
 class AgentCategorize(BaseModel):
     transaction_id: int
     category: str
@@ -444,53 +424,6 @@ class AgentCategorize(BaseModel):
 
 class NotifyIn(BaseModel):
     text: str
-
-
-def _receipt_json(r: Receipt) -> dict:
-    return {
-        "id": r.id,
-        "sender": r.sender,
-        "subject": r.subject,
-        "received_at": r.received_at,
-        "body": r.body,
-        "status": r.status,
-        "transaction_id": r.transaction_id,
-        "summary": r.summary,
-    }
-
-
-@app.post("/api/receipts", dependencies=[Depends(require_token)])
-async def api_receipt_in(body: ReceiptIn, session: DB):
-    receipt, created = await agent.save_receipt(
-        session, body.message_id, body.sender, body.subject, body.received_at, body.body
-    )
-    return {"id": receipt.id, "created": created}
-
-
-@app.get("/api/receipts", dependencies=[Depends(require_user)])
-async def api_receipts(session: DB, status: str = "new", limit: int = Query(50, ge=1, le=200)):
-    rows = (
-        await session.scalars(
-            select(Receipt).where(Receipt.status == status).order_by(Receipt.received_at).limit(limit)
-        )
-    ).all()
-    return {"items": [_receipt_json(r) for r in rows]}
-
-
-@app.post("/api/receipts/{receipt_id}/resolve", dependencies=[Depends(require_token)])
-async def api_receipt_resolve(receipt_id: int, body: ReceiptResolve, session: DB):
-    receipt = await session.get(Receipt, receipt_id)
-    if receipt is None:
-        raise HTTPException(404, "receipt not found")
-    txn = await _load(session, body.transaction_id) if body.transaction_id else None
-    try:
-        category = await ledger.get_category(session, body.category) if body.category else None
-        await agent.resolve_receipt(session, receipt, body.status, txn, category, body.summary, body.remember)
-    except agent.AgentRefused as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ledger.LedgerError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return _receipt_json(receipt)
 
 
 @app.post("/api/agent/categorize", dependencies=[Depends(require_token)])

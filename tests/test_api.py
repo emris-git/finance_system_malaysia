@@ -177,22 +177,3 @@ async def test_unknown_apple_pay_merchant_asks_for_category(client, monkeypatch)
     assert "какая категория" in text and "MYSTERY KIOSK" in text
     buttons = [row[0].text for row in markup.inline_keyboard]
     assert "🚕 Транспорт" in buttons
-
-
-async def test_email_import_failure_reaches_the_bot(client, monkeypatch):
-    import finance.bot
-    from finance.web import app as web_app
-
-    sent = []
-
-    async def fake_notify(text):
-        sent.append(text)
-
-    monkeypatch.setattr(finance.bot, "notify_owner", fake_notify)
-    r = await client.post(
-        "/api/imports", headers=TOKEN, files={"file": ("junk.pdf", b"%PDF-1.4 not really")}, data={"origin": "email"}
-    )
-    assert r.status_code == 400
-    for task in list(web_app._background):
-        await task
-    assert sent and "junk.pdf" in sent[0]
