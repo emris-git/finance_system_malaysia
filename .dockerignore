@@ -1,0 +1,9 @@
+.venv
+.git
+.env
+.claude
+**/__pycache__
+.pytest_cache
+tests
+*.pdf
+*.csv

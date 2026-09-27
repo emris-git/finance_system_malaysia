@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Финансы</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="login">
+    <div class="card">
+      <h1>💰 Финансы</h1>
+      {% if request.query_params.get("expired") %}
+      <p class="warn">Ссылка устарела или уже не действует.</p>
+      {% endif %}
+      {% if login_enabled %}
+      <p>Вход — по ссылке из Telegram-бота: отправь ему <code>/web</code>.</p>
+      {% else %}
+      <p class="warn">Вход выключен: на сервере не задан <code>SECRET_KEY</code>.</p>
+      {% endif %}
+    </div>
+  </main>
+</body>
+</html>

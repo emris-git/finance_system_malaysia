@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.env
+# Never commit real statements
+*.pdf
+*.csv
+!tests/fixtures/*.csv
+.railway/node_modules/
