@@ -1,5 +1,7 @@
 # Finance bot for Malaysia
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/finance-agent-malaysia?utm_medium=integration&utm_source=button&utm_campaign=finance-agent-malaysia)
+
 A personal finance tracker for people living in Malaysia. It reads Maybank and Touch 'n Go statements, keeps a ledger in Postgres and talks to you through a Telegram bot, with weekly and monthly reports and a web dashboard.
 
 It is built for Russian-speaking expats: the bot and the dashboard speak Russian, and next to ringgit it tracks a ruble account and MYR → RUB transfers (plus crypto wallets, if you have them).
@@ -30,13 +32,21 @@ Apple Pay events ──► pending rows, confirmed by the statement later
 
 ## Deploy on Railway
 
-You need a Railway account and about ten minutes.
+You need a Railway account and about five minutes.
 
 1. **Create a bot**: in Telegram open [@BotFather](https://t.me/BotFather), `/newbot`, and copy the token.
 2. **Find your Telegram id**: open [@userinfobot](https://t.me/userinfobot) and copy the number. A `@username` does not work.
-3. **Deploy**: in Railway create a project, add **PostgreSQL**, then add a service from this GitHub repo. Railway builds the `Dockerfile`; on every start the container runs migrations and loads the reference data. In the service settings set the healthcheck path to `/healthz`.
-4. **Generate a public domain** for the service (Settings → Networking) and set the variables below.
-5. Open your bot and press **Start**. On start the app registers the Telegram webhook by itself.
+3. **Deploy**: press the button and paste those two values. The template adds Postgres, generates the secrets and a public domain; on every start the container runs migrations and loads the reference data.
+
+   [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/finance-agent-malaysia?utm_medium=integration&utm_source=button&utm_campaign=finance-agent-malaysia)
+
+4. Open your bot and press **Start**, then send it a statement PDF. On start the app registers the Telegram webhook by itself.
+
+Later you can change the variables in the service settings, for example `MONTH_START_DAY` to follow your payday or the PDF passwords.
+
+### Manual setup
+
+Without the template: create a Railway project, add **PostgreSQL**, add a service from this GitHub repo (Railway builds the `Dockerfile`), set the healthcheck path to `/healthz`, generate a public domain on port 8000, and set these variables:
 
 | Variable | Value |
 |---|---|
@@ -44,6 +54,7 @@ You need a Railway account and about ten minutes.
 | `TELEGRAM_OWNER_ID` | your numeric id from @userinfobot (required) |
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | `PUBLIC_BASE_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` |
+| `PORT` | `8000`, the port the public domain points to |
 | `SECRET_KEY` | a long random string, signs dashboard logins |
 | `API_TOKEN` | a long random string, for the CLI and integrations |
 | `TELEGRAM_WEBHOOK_SECRET` | required: random letters and digits (Telegram's rule). Without it the webhook is not registered |
