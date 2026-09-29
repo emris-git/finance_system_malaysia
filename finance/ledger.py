@@ -29,6 +29,7 @@ from finance.models import (
     TRANSFER,
     USER_FACING_REVIEW,
     Account,
+    BalanceCheck,
     Category,
     CategoryRule,
     Import,
@@ -959,6 +960,20 @@ async def set_balance(session: AsyncSession, account_code: str, target: Decimal)
     session.add(txn)
     await session.commit()
     return txn
+
+
+async def check_balance(session: AsyncSession, account_code: str, amount: Decimal, day: date | None = None) -> BalanceCheck:
+    """The real balance of a bank or wallet account, read in its app before the statement came.
+
+    No correction row: the next statement takes over, and a correction would count twice then.
+    """
+    account = await get_account(session, account_code)
+    if account.kind not in STATEMENT_ACCOUNT_KINDS or account.currency != "MYR":
+        raise LedgerError("так задаётся остаток Maybank или TNG; рубли и наличные — /setbalance без названия счёта")
+    check = BalanceCheck(account_id=account.id, as_of=day or today(), amount=amount)
+    session.add(check)
+    await session.commit()
+    return check
 
 
 async def soft_delete(session: AsyncSession, txn: Transaction) -> None:

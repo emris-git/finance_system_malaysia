@@ -67,6 +67,8 @@ class Account(Base):
     kind: Mapped[str] = mapped_column(String(16))  # bank / ewallet / cash / savings / crypto
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     sort: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # savings pots only: a reserve the budget may spend, not a goal it must not touch
+    spendable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Category(Base):
@@ -196,3 +198,49 @@ class JobRun(Base):
     job: Mapped[str] = mapped_column(String(32))
     period_key: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BalanceCheck(Base):
+    """The real balance of a bank or wallet account, typed by the owner between statements.
+
+    The newest of this and the last statement balance is the starting point; rows
+    booked after it are added on top (see reports.balances).
+    """
+
+    __tablename__ = "balance_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# PlannedItem.status
+PLAN_OPEN, PLAN_DONE, PLAN_CANCELLED = "planned", "done", "cancelled"
+
+
+class PlannedItem(Base):
+    """Money the owner expects to move in a future cycle: a trip, a move, a yearly fee,
+    a monthly RF transfer, a bonus. The budget forecast puts it into the cycle of `due_on`.
+
+    `amount` is signed in MYR like a transaction (negative = out). `kind` is expense,
+    transfer (out of the spendable money but not spending: RF, a pot) or income.
+    `repeat_months` repeats it (1 = monthly) until `until`.
+    """
+
+    __tablename__ = "planned_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    kind: Mapped[str] = mapped_column(String(12), default=EXPENSE)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="SET NULL"))
+    due_on: Mapped[date] = mapped_column(Date)
+    repeat_months: Mapped[int | None] = mapped_column(Integer)
+    until: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10), default=PLAN_OPEN, server_default=PLAN_OPEN)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    category: Mapped[Category | None] = relationship(lazy="joined")

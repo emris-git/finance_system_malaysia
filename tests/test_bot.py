@@ -32,7 +32,7 @@ class FakeSession(BaseSession):
             return Message(
                 message_id=next(_ids), date=datetime.now(), chat=Chat(id=OWNER, type="private"),
                 text=method.text, from_user=User(id=1, is_bot=True, first_name="bot"),
-            )
+            ).as_(bot)  # like a real reply: the handler may edit it
         return True
 
     async def stream_content(self, *args, **kwargs):

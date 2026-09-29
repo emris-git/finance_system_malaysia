@@ -70,4 +70,8 @@ async def fill_demo(session: AsyncSession, days: int = 330) -> str:
         d = today() - timedelta(days=rng.randint(0, days))
         text, lo, hi = rng.choice([("такси", 300, 900), ("кафе", 800, 3000), ("продукты", 1500, 6000), ("подарок маме", 2000, 8000)])
         await ledger.add_manual(session, "ru", Decimal(-rng.randint(lo, hi)), text, d)
-    return f"demo: {len(maybank)} Maybank rows, {len(tng)} TNG rows, RUB entries added"
+    # The sample rows carry no printed balances: real ones typed a few days ago (/setbalance maybank …)
+    # give the budget forecast something to start from.
+    await ledger.check_balance(session, "maybank", Decimal("9500.00"), today() - timedelta(days=3))
+    await ledger.check_balance(session, "tng", Decimal("350.00"), today() - timedelta(days=3))
+    return f"demo: {len(maybank)} Maybank rows, {len(tng)} TNG rows, RUB entries and balance checks added"

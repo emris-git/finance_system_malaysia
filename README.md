@@ -29,6 +29,7 @@ Apple Pay events ──► pending rows, confirmed by the statement later
   - a monthly report on the first day of your financial month, which can follow your payday;
   - `/week`, `/month`, `/balance` on demand;
   - a dashboard behind a login link from `/web`.
+- **Budget**: `/budget` forecasts the next six months from your balances, salary and usual spending; `/plan` keeps future expenses; `/ask` lets Claude check whether a purchase fits (optional, needs `ANTHROPIC_API_KEY`).
 
 ## Deploy on Railway
 
@@ -63,6 +64,8 @@ Without the template: create a Railway project, add **PostgreSQL**, add a servic
 | `MONTH_START_DAY` | `1` for calendar months, or the day after your payday (salary on the 25th → `26`) |
 | `OWNER_NAME` | optional: your name as the bank prints it, so transfers to yourself pair up |
 | `TNG_PDF_PASSWORD`, `MAYBANK_PDF_PASSWORD` | optional: lets the bot open protected statements |
+| `ANTHROPIC_API_KEY` | optional: turns on `/ask` (the budget advisor). Leave empty and everything else works |
+| `BUDGET_MODEL`, `BUDGET_HORIZON` | optional: the `/ask` model (default `claude-sonnet-5-5`) and how many months `/budget` covers (default `6`) |
 
 Railway bills by usage. After the trial, the Hobby plan covers one small service plus Postgres.
 
@@ -79,6 +82,18 @@ Each row is one movement on one account, and its amount is signed in the account
 Savings pots are accounts of kind `savings` (`pot_<name>`). A Maybank Tabung row `TRANSFER FROM A/C … FUND Holiday` (a top-up) or `… BOOSTER Holiday` (an automatic save-up) becomes a transfer into «Копилка Holiday». `/pot Holiday 5000` sets a pot's real value.
 
 Months are **financial months**. With `MONTH_START_DAY=26` a month runs from the 26th to the 25th, and its report arrives on the 26th. The bot's `/month`, the dashboard presets and the monthly chart all use the same boundaries.
+
+## Budget, the plan and /ask
+
+`/budget` (and the dashboard card «Бюджет на полгода») forecasts the next `BUDGET_HORIZON` financial months (default 6, the current one included). It starts from the spendable money — MYR bank, wallet and cash; savings pots marked as a reserve (`/pot Reserve резерв`) are shown apart, goal pots (`/pot Holiday цель`, the default) are never counted — adds the expected salary (median of the last three months, on its usual day), subtracts the usual spending (per category, median of the last three months with full data; averaged with the same month a year earlier once the data reaches back that far) and the planned items. The current month is written out as a sum, and the table has a start column, so every row adds up. Trips are left out of the usual spending: a trip goes into the plan. For each month it shows the closing money and the low point just before the salary; spending that usually comes right after the salary (the rent) is not counted before it, judging by the latest month the category appeared in. RF transfers are not in the forecast unless planned.
+
+The salary is income in the «Зарплата» category (`salary`). The built-in rule catches `SALARY`, `GAJI` and `PAYROLL`; if your employer's transfer says something else, give it the «Зарплата» category in `/review` or on the dashboard. Until then `/budget` says the salary was not found.
+
+Planned items (`planned_items`) are future money moves: `/plan 1800 отель Бали 25.10`, `/plan 1600 экскурсия ноябрь`, `/plan 2000 РФ ежемесячно с 03.10 #перевод` (a transfer: not spending, but it leaves the spendable money), `/plan +3000 бонус 12.2026` (income). `/plan` lists them with ✅ paid / ✖️ cancelled; an unpaid one-off whose date passed stays in the current month.
+
+Between statements the real balance of Maybank or TNG can be typed with `/setbalance maybank 4210` (`balance_checks`): balances start from the newest of the last statement row and the check, plus the rows booked after it; the next statement takes over.
+
+`/ask` starts a talk with Claude about a purchase or an expense. It needs `ANTHROPIC_API_KEY` (console.anthropic.com → API keys); without it `/ask` answers that the advisor is off, and `/budget`, `/plan` and the dashboard work as usual. Claude (model `BUDGET_MODEL`, default `claude-sonnet-5-5`) gets the forecast as data, re-runs it with what-if purchases (`simulate`) and answers whether it fits and with which options (a later month, in parts, cuts, the reserve pot). Its final message is JSON (the answer and an optional plan item, shown as a «📌 В план» button): newer models return text written between tool calls as hidden thinking, so the answer must come after the last tool call. It never writes to the ledger. Follow-up questions keep the context; `/done` ends the talk, and after 30 idle minutes text is a cash entry again.
 
 ## Optional integrations
 
@@ -156,6 +171,9 @@ Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. M
 | POST | `/api/events` | `{amount, merchant, account or card}`: Apple Pay automation, token only |
 | POST | `/api/agent/categorize` | `{transaction_id, category, note, remember}`; refuses transfers, token only |
 | POST | `/api/notify` | `{text}` → a Telegram message to the owner, token only |
+| GET | `/api/budget` | the budget forecast |
+| GET, POST | `/api/plans` | open planned items; `{title, amount, due_on, kind, repeat_months}` adds one |
+| PATCH | `/api/plans/{id}` | `{status: done/cancelled}` |
 | POST | `/telegram/webhook` | Telegram |
 
 ## Privacy
@@ -163,6 +181,7 @@ Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. M
 - Only `TELEGRAM_OWNER_ID` can talk to the bot; everyone else is ignored. An update's body names its sender, so the webhook accepts only requests carrying `TELEGRAM_WEBHOOK_SECRET`, which only Telegram knows.
 - Without `SECRET_KEY` the dashboard login is off. Every response carries a Content-Security-Policy and anti-framing headers; uploads are capped at 15 MB.
 - Secrets live only in your Railway variables. `.gitignore` keeps PDF and CSV statements out of git; never commit real ones.
+- `/ask` sends the budget forecast (balances, per-category totals, pot names, plan titles) and your question to the Anthropic API; no transactions or statements. Without `ANTHROPIC_API_KEY` nothing leaves your project.
 - Telegram bot chats are not end-to-end encrypted. Statements you send to the bot pass through Telegram's servers.
 
 ## License

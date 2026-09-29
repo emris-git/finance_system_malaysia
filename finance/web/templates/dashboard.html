@@ -47,6 +47,27 @@
       <div class="table-scroll" id="monthly-table" hidden></div>
     </section>
 
+    <section class="card wide" id="budget">
+      <div class="card-head">
+        <h2>Бюджет на полгода</h2><span class="hint" id="budget-hint"></span>
+      </div>
+      <div class="kv" id="budget-money"></div>
+      <div class="table-scroll" id="budget-table" style="margin-top:10px"></div>
+      <div class="meta" id="budget-notes" style="margin-top:6px"></div>
+      <h3 class="sub-head">Запланировано</h3>
+      <div id="plan-list"></div>
+      <form class="plan-form" id="plan-form">
+        <input type="text" name="title" placeholder="Что" aria-label="Что" required>
+        <input type="number" name="amount" placeholder="RM" aria-label="Сумма, RM" min="0.01" step="0.01" required>
+        <input type="date" name="due_on" aria-label="Когда" required>
+        <select name="kind" aria-label="Тип">
+          <option value="expense">трата</option><option value="transfer">перевод (РФ, копилка)</option><option value="income">доход</option>
+        </select>
+        <label class="meta"><input type="checkbox" name="monthly"> каждый месяц</label>
+        <button class="btn primary" type="submit">Заложить</button>
+      </form>
+    </section>
+
     <section class="card">
       <div class="card-head">
         <h2>Категории, RM</h2><span class="hint" id="cat-hint">черта — среднее за 3 прошлых таких же периода</span>

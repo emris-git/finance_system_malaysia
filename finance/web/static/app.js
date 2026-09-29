@@ -404,7 +404,7 @@ function renderSummary(s) {
   balances.textContent = "";
   for (const b of s.balances) {
     balances.append(
-      el("span", {}, b.account, b.as_of ? el("div", { class: "m", text: `по выписке на ${fmtDay(b.as_of)}` }) : el("div", { class: "m", text: "по записям" })),
+      el("span", {}, b.account, b.as_of ? el("div", { class: "m", text: `по данным на ${fmtDay(b.as_of)}` }) : el("div", { class: "m", text: "по записям" })),
       el("span", { class: "v", text: fmtMoney(b.amount, b.currency) }),
     );
   }
@@ -512,6 +512,109 @@ async function loadReview(showAll = false) {
   if (!showAll && all.length > REVIEW_SHOWN) {
     list.append(el("button", { class: "btn more", text: `Показать все (${all.length})`, onclick: () => loadReview(true) }));
   }
+}
+
+// ---------- budget -------------------------------------------------------------
+
+const PLAN_KINDS = { transfer: "перевод", income: "доход" };
+
+function planWhen(p) {
+  const when = fmtDay(p.due_on);
+  if (p.repeat_months === 1) return `каждый месяц с ${when}`;
+  if (p.repeat_months === 12) return `каждый год с ${when}`;
+  if (p.repeat_months) return `раз в ${p.repeat_months} мес. с ${when}`;
+  return when;
+}
+
+async function loadBudget() {
+  const [b, plans] = await Promise.all([api("/api/budget"), api("/api/plans")]);
+  const day = state.meta.month_start_day;
+  $("#budget-hint").textContent = day > 1 ? `месяц — с ${day}-го по ${day - 1}-е, по зарплате` : "по календарным месяцам";
+
+  const money = $("#budget-money");
+  money.textContent = "";
+  money.append(el("span", {}, "Можно тратить", el("div", { class: "m", text: b.liquid.map((x) => x.account).join(", ") })),
+    el("span", { class: "v", text: fmtRM(b.liquid_total) }));
+  for (const p of b.reserve_pots) money.append(el("span", {}, p.pot, el("div", { class: "m", text: "резерв" })), el("span", { class: "v", text: fmtRM(p.amount) }));
+  for (const p of b.protected_pots) money.append(el("span", {}, p.pot, el("div", { class: "m", text: "цель, не трогаем" })), el("span", { class: "v", text: fmtRM(p.amount) }));
+
+  const root = $("#budget-table");
+  root.textContent = "";
+  const first = b.cycles[0];
+  if (first) {
+    const parts = [`${fmtRM(first.opening)} на счетах`];
+    if (num(first.salary)) parts.push(`+ ${fmtRM(first.salary)} зарплата ${fmtDay(first.salary_day)}`);
+    const spent = num(first.spent_so_far) ? ` (${fmtRM(first.usual_spending_month)} за месяц − уже ${fmtRM(first.spent_so_far)})` : "";
+    parts.push(`− ${fmtRM(first.usual_spending_left)} обычные траты${spent}`);
+    if (first.planned.length) parts.push(`${num(first.planned_total) < 0 ? "−" : "+"} ${fmtRM(Math.abs(num(first.planned_total)))} план (${first.planned.map((p) => p.title).join(", ")})`);
+    const formula = [el("b", { text: `${first.label}: ` }), parts.join(" "), " = ", el("b", { text: fmtRM(first.closing) }), ` к ${fmtDay(first.end)}.`];
+    if (num(first.salary)) {
+      const planBefore = num(first.planned_before_salary) ? ` ${num(first.planned_before_salary) < 0 ? "−" : "+"} ${fmtRM(Math.abs(num(first.planned_before_salary)))} плана` : "";
+      formula.push(` Дно утром ${fmtDay(first.salary_day)}: ${fmtRM(first.opening)} − ${fmtRM(first.usual_spending_before_salary)} трат до зарплаты${planBefore} = `,
+        el("b", { class: num(first.low_before_salary) < 0 ? "warn" : "", text: fmtRM(first.low_before_salary) }), ".");
+    }
+    root.append(el("p", { class: "formula" }, ...formula));
+  }
+  const table = el("table", { class: "data" });
+  const heads = ["Месяц", "Старт", "+ Зарплата", "− Обычные траты", "± План", "= Конец месяца", "Дно перед зарплатой"];
+  table.append(el("thead", {}, el("tr", {}, heads.map((h, i) => el("th", { class: i ? "num" : null, text: h })))));
+  const body = el("tbody");
+  for (const c of b.cycles) {
+    const planned = c.planned.length ? fmtMoney(c.planned_total, "MYR", true) : "—";
+    body.append(el("tr", {},
+      el("td", {}, c.label, el("div", { class: "meta", text: `${fmtDay(c.start)} – ${fmtDay(c.end)}` })),
+      el("td", { class: "num", text: fmtRM(c.opening) }),
+      el("td", { class: "num", text: num(c.salary) ? fmtMoney(c.salary, "MYR", true) : "—" }),
+      el("td", { class: "num", text: fmtMoney(-num(c.usual_spending_left), "MYR"), title: `за месяц ${fmtRM(c.usual_spending_month)}` }),
+      el("td", { class: "num", text: planned, title: c.planned.map((p) => `${p.title}: ${fmtMoney(p.amount, "MYR", true)}`).join("\n") }),
+      el("td", { class: `num ${num(c.closing) < 0 ? "warn" : ""}`, text: fmtMoney(c.closing, "MYR") }),
+      el("td", { class: `num ${num(c.low_before_salary) < 0 ? "warn" : ""}`, text: fmtMoney(c.low_before_salary, "MYR"),
+        title: `${fmtRM(c.opening)} − ${fmtRM(c.usual_spending_before_salary)} трат до зарплаты` }),
+    ));
+  }
+  table.append(body);
+  root.append(table);
+  root.append(el("div", { class: "meta", text: "Конец = старт + зарплата − обычные траты ± план; конец месяца — старт следующего. Дно — сколько останется утром перед зарплатой." }));
+
+  const notes = [];
+  if (num(b.usual_spending_total)) notes.push(`обычные траты ${fmtRM(b.usual_spending_total)} в месяц — медиана за прошлые месяцы`);
+  if (num(b.rf_transfers_per_cycle_not_in_forecast)) notes.push(`переводы на РФ (обычно ${fmtRM(b.rf_transfers_per_cycle_not_in_forecast)}) не учтены, пока их нет в плане`);
+  if (num(b.trips_per_cycle_not_in_forecast)) notes.push(`поездки только из плана`);
+  $("#budget-notes").textContent = [...notes, ...b.notes].join(" · ");
+
+  const list = $("#plan-list");
+  list.textContent = "";
+  if (!plans.length) list.append(el("div", { class: "empty", text: "Ничего не запланировано" }));
+  for (const p of plans) {
+    const setStatus = (status) => act(api(`/api/plans/${p.id}`, { method: "PATCH", body: JSON.stringify({ status }) }).then(loadBudget));
+    list.append(el("div", { class: "plan-item" },
+      el("div", {},
+        el("b", { class: num(p.amount) > 0 ? "amount-in" : "", text: fmtMoney(p.amount, "MYR", true) }), ` · ${p.title}`,
+        el("div", { class: "meta", text: [planWhen(p), PLAN_KINDS[p.kind], p.category_label].filter(Boolean).join(" · ") })),
+      el("div", { class: "actions" },
+        el("button", { class: "btn", text: "✅ Оплачено", onclick: () => setStatus("done") }),
+        el("button", { class: "btn", text: "✖️", title: "Не будет", onclick: () => setStatus("cancelled") })),
+    ));
+  }
+}
+
+function initPlanForm() {
+  const form = $("#plan-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const body = {
+      title: f.get("title"), amount: f.get("amount"), due_on: f.get("due_on"), kind: f.get("kind"),
+      repeat_months: f.get("monthly") ? 1 : null,
+    };
+    try {
+      await api("/api/plans", { method: "POST", body: JSON.stringify(body) });
+      form.reset();
+      await loadBudget();
+    } catch (err) {
+      alert(`Не получилось: ${err.message}`);
+    }
+  });
 }
 
 // ---------- transactions -----------------------------------------------------
@@ -630,9 +733,10 @@ async function init() {
     });
   }
 
+  initPlanForm();
   state.monthly = await api("/api/monthly?currency=MYR&months=12");
   renderMonthly();
-  await refresh();
+  await Promise.all([refresh(), loadBudget()]);
 }
 
 init();

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
@@ -15,13 +16,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finance import ledger, reports
+from finance import advisor, budget, ledger, reports
 from finance.classify import rule_label, suggest_pattern
 from finance.config import get_settings
 from finance.models import (
     CRYPTO,
     EXPENSE,
     INCOME,
+    PLAN_CANCELLED,
+    PLAN_DONE,
     REVIEW_AWAITING_PAIR,
     REVIEW_P2P,
     REVIEW_P2P_IN,
@@ -61,7 +64,13 @@ HELP = """💰 <b>Финансовый бот</b>
 
 <b>Отчёты</b>: /week /lastweek /month /balance, дашборд — /web
 Остаток рублёвого счёта: <code>/setbalance 20000</code>, криптокошелька: <code>/setbalance usdt 120</code>
-Копилки: /pot, сумма — <code>/pot Holiday 15000</code>
+Остаток Maybank или TNG из приложения, пока нет выписки: <code>/setbalance maybank 4210</code>
+Копилки: /pot, сумма — <code>/pot Holiday 15000</code>, можно ли тратить в бюджете — <code>/pot Reserve резерв</code> / <code>/pot Holiday цель</code>
+
+<b>Бюджет</b>:
+• /budget — прогноз на полгода: сколько останется к концу каждого месяца и перед зарплатой
+• /plan — будущие траты: <code>/plan 1800 отель Бали 25.10</code>, <code>/plan 12000 переезд март 2027</code>, <code>/plan 2000 РФ ежемесячно с 03.10 #перевод</code>
+• /ask — спросить Claude, пролезет ли покупка: <code>/ask ноутбук за 6000 в декабре</code>
 Категорию для незнакомого магазина запоминаю сразу — дальше такие ставлю сам. Список и удаление: /rules
 
 По понедельникам пришлю отчёт за неделю, наутро после зарплаты — за месяц."""
@@ -88,6 +97,10 @@ class RubBack(StatesGroup):
 
 # Words /setbalance takes for the RUB and cash accounts, not coin tickers
 NOT_COINS = {"CASH", "RM", "MYR", "RU", "RUB", "RUR"}
+# /setbalance maybank 4210: the real balance of a statement account between statements
+STATEMENT_ACCOUNT_WORDS = {"maybank": "maybank", "mbb": "maybank", "мейбанк": "maybank", "tng": "tng", "тнг": "tng"}
+# /pot Reserve резерв: the budget may spend it; цель: it may not
+POT_ROLES = {"резерв": True, "цель": False}
 
 
 # --- rendering ---------------------------------------------------------------
@@ -286,6 +299,20 @@ async def cmd_balance(message: Message, session: AsyncSession) -> None:
 
 @router.message(Command("setbalance"))
 async def cmd_setbalance(message: Message, session: AsyncSession, command: CommandObject) -> None:
+    words = (command.args or "").split()
+    if len(words) == 2 and words[0].lower() in STATEMENT_ACCOUNT_WORDS:
+        try:
+            amount = to_decimal(words[1])
+        except ValueError:
+            await message.answer("Формат: <code>/setbalance maybank 4210</code>")
+            return
+        await ledger.check_balance(session, STATEMENT_ACCOUNT_WORDS[words[0].lower()], amount)
+        account = await ledger.get_account(session, STATEMENT_ACCOUNT_WORDS[words[0].lower()])
+        await message.answer(
+            f"{escape(account.name)}: {fmt_money(amount)} на сегодня. Покупки после этого добавятся сверху, "
+            "а когда придёт выписка, остаток возьмётся из неё."
+        )
+        return
     coin = parse_crypto_amount(command.args or "")
     if coin and coin[1] and coin[1] not in NOT_COINS:
         target, ticker = coin
@@ -313,8 +340,19 @@ async def cmd_setbalance(message: Message, session: AsyncSession, command: Comma
 
 @router.message(Command("pot", "pots"))
 async def cmd_pot(message: Message, session: AsyncSession, command: CommandObject) -> None:
-    """/pot — list; /pot Holiday 15000 — set the value (creates the pot if needed)."""
+    """/pot — list; /pot Holiday 15000 — set the value (creates the pot if needed);
+    /pot Reserve резерв | цель — whether the budget may spend it."""
     args = (command.args or "").strip()
+    name, _, role = args.rpartition(" ")
+    if name and role.lower() in POT_ROLES:
+        pot = await ledger.get_or_create_pot(session, name)
+        pot.spendable = POT_ROLES[role.lower()]
+        await session.commit()
+        await message.answer(
+            f"🐷 {escape(pot.name)}: "
+            + ("резерв — бюджет может на неё рассчитывать." if pot.spendable else "цель — бюджет её не трогает.")
+        )
+        return
     if args:
         name, _, last = args.rpartition(" ")
         try:
@@ -335,10 +373,11 @@ async def cmd_pot(message: Message, session: AsyncSession, command: CommandObjec
     balances = {name: amount for name, _, amount, _ in await reports.balances(session)}
     pots = await ledger.pots(session)
     for pot in pots:
-        lines.append(f"{escape(pot.name)} — {fmt_money(balances.get(pot.name, 0))}")
+        role = " · резерв" if pot.spendable else ""
+        lines.append(f"{escape(pot.name)} — {fmt_money(balances.get(pot.name, 0))}{role}")
     if not pots:
         lines.append("Пока нет. Переводы Maybank «FUND …» создают их сами.")
-    lines += ["", "Задать сумму: <code>/pot Holiday 15000</code>"]
+    lines += ["", "Задать сумму: <code>/pot Holiday 15000</code>. Можно тратить в бюджете: <code>/pot Reserve резерв</code>, нельзя: <code>/pot Holiday цель</code>"]
     await message.answer("\n".join(lines))
 
 
@@ -724,6 +763,173 @@ async def on_crypto_amount(message: Message, session: AsyncSession, state: FSMCo
     )
     if data.get("crypto_review"):
         await send_next_review(message, session, state)
+
+
+# --- budget: forecast, plan, /ask ------------------------------------------------
+
+
+class PlanCb(CallbackData, prefix="p"):
+    a: str  # done / cancel: a plan item; add: the /ask proposal; stop: end the /ask talk
+    p: int = 0
+
+
+class AskBudget(StatesGroup):
+    active = State()
+
+
+# a text sent later than this after the last /ask answer is an entry again, not a question
+ASK_IDLE = timedelta(minutes=30)
+
+PLAN_HELP = (
+    "Добавить: <code>/plan 1800 отель Бали 25.10</code>, <code>/plan 1600 экскурсия ноябрь</code>, "
+    "<code>/plan 2000 РФ ежемесячно с 03.10 #перевод</code>, доход — с плюсом: <code>/plan +3000 бонус 12.2026</code>.\n"
+    "✅ — оплачено, ✖️ — не будет."
+)
+
+
+@router.message(Command("budget"))
+async def cmd_budget(message: Message, session: AsyncSession) -> None:
+    await message.answer(budget.format_forecast(await budget.forecast(session)))
+
+
+async def plans_view(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup | None]:
+    items = await budget.open_plans(session)
+    lines = ["🗓 <b>План</b>"]
+    kb = InlineKeyboardBuilder()
+    for i, item in enumerate(items, 1):
+        lines.append(f"{i}. {budget.plan_line(item)}")
+        kb.button(text=f"✅ {i}", callback_data=PlanCb(a="done", p=item.id))
+        kb.button(text=f"✖️ {i}", callback_data=PlanCb(a="cancel", p=item.id))
+    if not items:
+        lines.append("Пока пусто.")
+    lines += ["", PLAN_HELP]
+    kb.adjust(4)
+    return "\n".join(lines), kb.as_markup() if items else None
+
+
+async def plan_impact(session: AsyncSession, due_on: date) -> str:
+    """How the cycle of a new plan item looks with it."""
+    f = await budget.forecast(session)
+    cycle = next((c for c in f.cycles if c.start <= due_on <= c.end), f.cycles[0] if due_on < f.cycles[0].start else None)
+    if cycle is None:
+        return f"Это дальше прогноза ({len(f.cycles)} мес.), учту, когда дойдём."
+    warn = " ⚠️" if cycle.low < 0 else ""
+    return f"В {cycle.label}: к концу месяца {fmt_money(cycle.closing)}, перед зарплатой {fmt_money(cycle.low)}{warn}. /budget"
+
+
+@router.message(Command("plan", "plans"))
+async def cmd_plan(message: Message, session: AsyncSession, command: CommandObject) -> None:
+    args = (command.args or "").strip()
+    if not args:
+        text, markup = await plans_view(session)
+        await message.answer(text, reply_markup=markup)
+        return
+    draft = budget.parse_plan(args)
+    if draft is None:
+        await message.answer(f"Нужны сумма и когда. {PLAN_HELP}")
+        return
+    category = None
+    if draft.category_tag and draft.kind == EXPENSE:
+        category = await ledger.find_category(session, draft.category_tag, EXPENSE)
+    try:
+        item = await budget.add_plan(
+            session, draft.title, draft.amount, draft.due_on, draft.kind,
+            category.code if category else None, draft.repeat_months,
+        )
+    except ledger.LedgerError as exc:
+        await message.answer(f"Не получилось: {escape(str(exc))}")
+        return
+    await message.answer(f"🗓 Заложил: {budget.plan_line(item)}\n{await plan_impact(session, item.due_on)}")
+
+
+async def answer_question(message: Message, session: AsyncSession, state: FSMContext, question: str) -> None:
+    status = await message.answer("🧮 Считаю…")
+    data = await state.get_data()
+    try:
+        answer = await advisor.ask(session, question, data.get("ask_history"))
+    except advisor.AdvisorError as exc:
+        await status.edit_text(f"🧮 Не получилось: {escape(str(exc))}.")
+        return
+    await state.update_data(
+        ask_history=answer.history,
+        ask_at=datetime.now(timezone.utc).isoformat(),
+        ask_proposal=answer.proposal.to_state() if answer.proposal else None,
+    )
+    kb = InlineKeyboardBuilder()
+    if answer.proposal:
+        p = answer.proposal
+        kb.button(text=f"📌 В план: {p.title[:30]} {fmt_money(p.amount)} {fmt_day(p.due_on)}", callback_data=PlanCb(a="add"))
+    kb.button(text="Закончить", callback_data=PlanCb(a="stop"))
+    kb.adjust(1)
+    try:
+        await status.edit_text(answer.text, reply_markup=kb.as_markup())
+    except TelegramBadRequest:  # the model's markup did not parse: show it as plain text
+        await status.edit_text(escape(answer.text), reply_markup=kb.as_markup())
+
+
+@router.message(Command("ask"))
+async def cmd_ask(message: Message, session: AsyncSession, state: FSMContext, command: CommandObject) -> None:
+    if not advisor.enabled():
+        await message.answer("🧮 Анализатор выключен: на сервере не задан ANTHROPIC_API_KEY.")
+        return
+    await state.set_state(AskBudget.active)
+    await state.update_data(ask_history=[], ask_proposal=None, ask_at=datetime.now(timezone.utc).isoformat())
+    if command.args:
+        await answer_question(message, session, state, command.args.strip())
+        return
+    await message.answer(
+        "🧮 Спрашивай про деньги на ближайшие месяцы, например: «хочу ноутбук за 6000 в декабре — пролезет?», "
+        "«потяну переезд за 12 000 в марте?», «сколько могу потратить на подарки в декабре?».\n"
+        "Пока идёт разговор, обычный текст — это вопрос. Выйти — /done."
+    )
+
+
+@router.message(Command("done"))
+async def cmd_done(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(ask_history=None, ask_proposal=None)
+    await message.answer("Ок, разговор про бюджет закончен.")
+
+
+@router.message(StateFilter(AskBudget.active), F.text & ~F.text.startswith("/"))
+async def on_ask_text(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    last = (await state.get_data()).get("ask_at")
+    if last and datetime.now(timezone.utc) - datetime.fromisoformat(last) > ASK_IDLE:
+        await state.set_state(None)
+        await state.update_data(ask_history=None, ask_proposal=None)
+        await on_text(message, session)
+        return
+    await answer_question(message, session, state, message.text)
+
+
+@router.callback_query(PlanCb.filter())
+async def cb_plan(query: CallbackQuery, callback_data: PlanCb, session: AsyncSession, state: FSMContext) -> None:
+    if callback_data.a in ("done", "cancel"):
+        try:
+            await budget.close_plan(session, callback_data.p, PLAN_DONE if callback_data.a == "done" else PLAN_CANCELLED)
+        except ledger.LedgerError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+        text, markup = await plans_view(session)
+        await query.message.edit_text(text, reply_markup=markup)
+        await query.answer("Оплачено" if callback_data.a == "done" else "Убрал из плана")
+        return
+    if callback_data.a == "stop":
+        await state.set_state(None)
+        await state.update_data(ask_history=None, ask_proposal=None)
+        await query.message.edit_reply_markup(reply_markup=None)
+        await query.answer("Разговор закончен")
+        return
+    saved = (await state.get_data()).get("ask_proposal")
+    if not saved:
+        await query.answer("Предложение устарело — спроси ещё раз", show_alert=True)
+        return
+    p = advisor.Proposal.from_state(saved)
+    item = await budget.add_plan(session, p.title, -p.amount, p.due_on)
+    await state.update_data(ask_proposal=None)  # a second tap must not add it again
+    await query.message.edit_reply_markup(reply_markup=None)
+    await query.message.answer(f"🗓 Заложил: {budget.plan_line(item)}\n{await plan_impact(session, item.due_on)}")
+    await query.answer()
 
 
 # --- free text: manual entries ---------------------------------------------------

@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     TNG_PDF_PASSWORD: str | None = None
     MAYBANK_PDF_PASSWORD: str | None = None
 
+    # /ask in the bot: Claude weighs a purchase against the budget forecast; without a key /ask says it is off.
+    ANTHROPIC_API_KEY: str | None = None
+    BUDGET_MODEL: str = "claude-sonnet-5-5"
+    # How many salary cycles the forecast covers, the current one included
+    BUDGET_HORIZON: int = Field(6, ge=1, le=24)
+
     SCHEDULER_ENABLED: bool = False
 
     # First day of the "financial month". Salary lands on the 25th, so a month

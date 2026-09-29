@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -21,10 +21,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finance import agent, ledger, reports
+from finance import agent, budget, ledger, reports
 from finance.config import get_settings
 from finance.db import get_db
-from finance.models import PENDING, REVIEW_UNCATEGORIZED, Account, Category, Transaction
+from finance.models import PENDING, REVIEW_UNCATEGORIZED, Account, Category, PlannedItem, Transaction
 from finance.parsers import MAX_FILE_BYTES, ParseError, parse_file
 from finance.quick_entry import parse_device_event
 from finance.utils import cycle_bounds, parse_amount, to_decimal, today
@@ -231,6 +231,70 @@ async def api_monthly(session: DB, currency: str = "MYR", months: int = Query(12
 async def api_daily(session: DB, currency: str = "MYR", start: date | None = None, end: date | None = None):
     start, end = _period(start, end)
     return await reports.daily_series(session, start, end, currency)
+
+
+@app.get("/api/budget", dependencies=[Depends(require_user)])
+async def api_budget(session: DB):
+    return budget.forecast_json(await budget.forecast(session))
+
+
+def _plan_json(item: PlannedItem) -> dict:
+    return {
+        "id": item.id,
+        "title": item.title,
+        "amount": item.amount,
+        "kind": item.kind,
+        "category": item.category.code if item.category else None,
+        "category_label": item.category.label if item.category else None,
+        "due_on": item.due_on,
+        "repeat_months": item.repeat_months,
+        "until": item.until,
+        "status": item.status,
+        "note": item.note,
+    }
+
+
+class PlanBody(BaseModel):
+    title: str
+    amount: Decimal  # positive; the sign follows the kind
+    due_on: date
+    kind: Literal["expense", "transfer", "income"] = "expense"
+    category: str | None = None
+    repeat_months: int | None = None
+    until: date | None = None
+    note: str | None = None
+
+
+class PlanPatch(BaseModel):
+    status: Literal["planned", "done", "cancelled"]
+
+
+@app.get("/api/plans", dependencies=[Depends(require_user)])
+async def api_plans(session: DB):
+    return [_plan_json(item) for item in await budget.open_plans(session)]
+
+
+@app.post("/api/plans", dependencies=[Depends(require_user)])
+async def api_add_plan(body: PlanBody, session: DB):
+    amount = abs(body.amount) if body.kind == "income" else -abs(body.amount)
+    try:
+        item = await budget.add_plan(
+            session, body.title, amount, body.due_on, body.kind, body.category or None,
+            body.repeat_months or None, body.until, body.note or None,
+        )
+    except ledger.LedgerError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _plan_json(item)
+
+
+@app.patch("/api/plans/{item_id}", dependencies=[Depends(require_user)])
+async def api_patch_plan(item_id: int, body: PlanPatch, session: DB):
+    try:
+        item = await budget.close_plan(session, item_id, body.status)
+    except ledger.LedgerError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    await session.refresh(item, ["category"])
+    return _plan_json(item)
 
 
 @app.get("/api/transactions", dependencies=[Depends(require_user)])

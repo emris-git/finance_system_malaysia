@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from html import escape
 
-from sqlalchemy import and_, case, func, literal_column, select
+from sqlalchemy import and_, case, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finance.config import get_settings
@@ -21,6 +21,7 @@ from finance.models import (
     REVIEW_P2P,
     SAVINGS,
     Account,
+    BalanceCheck,
     Category,
     Transaction,
     Transfer,
@@ -242,25 +243,58 @@ async def freshness(session: AsyncSession) -> list[Freshness]:
     return [Freshness(name, last) for name, last in rows]
 
 
+async def known_balance(session: AsyncSession, account: Account) -> tuple[Decimal, date, datetime | None] | None:
+    """The newest balance known for sure: the last statement row, or a balance check
+    typed later (its creation time comes along: rows added after it that day count on top)."""
+    last = (
+        await session.execute(
+            select(Transaction.balance_after, Transaction.booked_on)
+            .where(
+                Transaction.account_id == account.id,
+                Transaction.balance_after.is_not(None),
+                Transaction.deleted_at.is_(None),
+            )
+            .order_by(Transaction.booked_on.desc(), Transaction.id.desc())
+            .limit(1)
+        )
+    ).first()
+    check = await session.scalar(
+        select(BalanceCheck)
+        .where(BalanceCheck.account_id == account.id)
+        .order_by(BalanceCheck.as_of.desc(), BalanceCheck.id.desc())
+        .limit(1)
+    )
+    if check is not None and (last is None or check.as_of > last[1]):
+        return Decimal(check.amount), check.as_of, check.created_at
+    if last is not None:
+        return Decimal(last[0]), last[1], None
+    return None
+
+
 async def balances(session: AsyncSession) -> list[tuple[str, str, Decimal, date | None]]:
-    """Statement accounts: last printed balance. Manual accounts: sum of entries."""
+    """Statement accounts: the newest known balance (statement or a balance check) plus
+    the rows booked after it, so purchases entered before the next statement count.
+    Manual accounts: sum of entries."""
     out = []
     accounts = (await session.scalars(select(Account).where(Account.is_active).order_by(Account.sort))).all()
     for account in accounts:
-        last = (
-            await session.execute(
-                select(Transaction.balance_after, Transaction.booked_on)
-                .where(
-                    Transaction.account_id == account.id,
-                    Transaction.balance_after.is_not(None),
-                    Transaction.deleted_at.is_(None),
+        known = await known_balance(session, account)
+        if known is not None:
+            amount, day, checked_at = known
+            after = Transaction.booked_on > day
+            if checked_at is not None:
+                after = or_(after, and_(Transaction.booked_on == day, Transaction.created_at > checked_at))
+            added, last_day = (
+                await session.execute(
+                    select(func.coalesce(func.sum(Transaction.amount), 0), func.max(Transaction.booked_on)).where(
+                        Transaction.account_id == account.id,
+                        Transaction.status != REVERSED,
+                        Transaction.deleted_at.is_(None),
+                        after,
+                    )
                 )
-                .order_by(Transaction.booked_on.desc(), Transaction.id.desc())
-                .limit(1)
-            )
-        ).first()
-        if last is not None:
-            out.append((account.name, account.currency, Decimal(last[0]), last[1]))
+            ).one()
+            out.append((account.name, account.currency, amount + Decimal(added), max(day, last_day or day)))
             continue
         total, count = (
             await session.execute(

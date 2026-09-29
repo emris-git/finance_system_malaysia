@@ -149,3 +149,12 @@ table.data .meta { color: var(--muted); font-size: 12px; }
 .login h1 { font-size: 22px; margin: 0 0 8px; }
 .login p { color: var(--ink-2); margin: 8px 0 0; }
 .login code { background: var(--wash); padding: 1px 6px; border-radius: 6px; }
+
+.sub-head { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 16px 0 6px; }
+.plan-item { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--grid); }
+.plan-item .actions { display: flex; gap: 6px; }
+.plan-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.plan-form input[name="title"] { flex: 1 1 180px; }
+.plan-form input[name="amount"] { width: 110px; }
+.meta { color: var(--muted); font-size: 12px; }
+.formula { margin: 0 0 10px; color: var(--ink-2); }
