@@ -284,3 +284,28 @@ def test_crypto_amount():
     assert parse_crypto_amount("1 500.25") == (Decimal("1500.25"), None)
     assert parse_crypto_amount("usdt") is None
     assert parse_crypto_amount("60 USDT BTC") is None
+
+
+def test_screenshot_answer_to_payment():
+    from datetime import datetime
+
+    import pytest
+
+    from finance.screenshot import Payment, ScreenshotError, payment_from
+
+    answer = {
+        "is_payment": True, "app": "tng", "direction": "out", "amount": "1,015.00", "currency": "RM",
+        "counterparty": "  TAN  MEI LING ", "remark": "tan mei ling", "occurred_at": "2026-09-28 19:44",
+        "to_person": True, "failure_reason": "",
+    }
+    p = payment_from(answer)
+    assert (p.amount, p.currency, p.counterparty, p.remark, p.account) == (Decimal("1015.00"), "MYR", "TAN MEI LING", "", "tng")
+    assert p.occurred_at == datetime(2026, 9, 28, 19, 44) and p.to_person and not p.incoming
+    assert Payment.from_state(p.to_state()) == p
+
+    assert payment_from({**answer, "app": "other", "occurred_at": ""}).account is None
+    assert payment_from({**answer, "occurred_at": ""}).occurred_at is None
+    with pytest.raises(ScreenshotError, match="баланс"):
+        payment_from({**answer, "is_payment": False, "failure_reason": "это экран баланса"})
+    with pytest.raises(ScreenshotError, match="сумму"):
+        payment_from({**answer, "amount": "—"})

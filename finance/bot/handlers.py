@@ -16,26 +16,30 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finance import advisor, budget, ledger, reports
-from finance.classify import rule_label, suggest_pattern
+from finance import advisor, budget, ledger, reports, screenshot
+from finance.classify import names_owner, rule_label, suggest_pattern
 from finance.config import get_settings
 from finance.models import (
     CRYPTO,
     EXPENSE,
     INCOME,
+    PENDING,
     PLAN_CANCELLED,
     PLAN_DONE,
+    POSTED,
     REVIEW_AWAITING_PAIR,
     REVIEW_P2P,
     REVIEW_P2P_IN,
     REVIEW_UNCATEGORIZED,
+    USER_FACING_REVIEW,
     Account,
     Category,
     Transaction,
 )
 from finance.parsers import MAX_FILE_BYTES, ParseError, parse_file
 from finance.quick_entry import KNOWN_COINS, parse_crypto_amount, parse_entry, parse_rf_command
-from finance.utils import cycle_ending_in, fmt_day, fmt_money, to_decimal
+from finance.screenshot import Payment, ScreenshotError
+from finance.utils import cycle_ending_in, fmt_day, fmt_money, to_decimal, today
 from finance.web.auth import login_enabled, magic_link
 
 router = Router()
@@ -49,6 +53,8 @@ HELP = """💰 <b>Финансовый бот</b>
 • <code>+5000₽ кэшбэк</code> — поступление в рублях
 • <code>25 rm обед вчера</code> — наличные ринггиты
 • <code>1500₽ 24.09 такси #транспорт</code> — с датой (ДД.ММ или ДД.ММ.ГГГГ) и категорией
+
+<b>Скрин оплаты</b> — пришли скриншот успешного платежа из TNG или MAE: запишу расход и спрошу категорию, если сам не пойму. Когда придёт выписка, запись подтвердится без дубля.
 
 <b>Перевод на РФ</b> (отдал ринггиты — получил рубли):
 • в /review нажми 🇷🇺 у перевода и напиши, сколько ₽ пришло
@@ -211,7 +217,7 @@ def entry_card(t: Transaction) -> tuple[str, InlineKeyboardMarkup]:
     )
     kb = InlineKeyboardBuilder()
     kb.button(text="🏷 Категория", callback_data=Act(a="qcats", t=t.id))
-    if t.account.kind != CRYPTO:  # a coin is always typed out, nothing to switch
+    if t.account.code in ("ru", "cash_myr"):  # a coin is always typed out, a card row came from the bank
         other = "💵 Это RM наличными" if t.account.currency == "RUB" else "₽ Это рубли"
         kb.button(text=other, callback_data=Act(a="cur", t=t.id))
     kb.button(text="🗑 Удалить", callback_data=Act(a="del", t=t.id))
@@ -430,6 +436,137 @@ async def cmd_undo(message: Message, session: AsyncSession) -> None:
         return
     await ledger.soft_delete(session, txn)
     await message.answer(f"🗑 Удалил: {fmt_money(txn.amount, txn.account.currency, signed=True)} · {escape(txn.description)}")
+
+
+# --- payment screenshots --------------------------------------------------------
+
+
+class Shot(CallbackData, prefix="s"):
+    a: str  # acc: record on account x; new: record although a matching row exists
+    x: int = 0
+
+
+def screenshot_card(t: Transaction, cats: list[Category]) -> tuple[str, InlineKeyboardMarkup]:
+    note = f" ({escape(t.note)})" if t.note else ""
+    text = f"📸 Записал: <b>{fmt_money(t.amount, t.account.currency, signed=True)}</b> · {escape(t.description)}{note}\n"
+    where = f"{escape(t.account.name)} · {fmt_day(t.booked_on)}"
+    kb = InlineKeyboardBuilder()
+    if t.review_reason in USER_FACING_REVIEW:
+        text += f"{where}\n\nКакая категория?"
+        category_grid(kb, cats, t.id, "cat", 0)
+        kb.button(text="🗑 Не записывать", callback_data=Act(a="del", t=t.id))
+        kb.adjust(1)
+        return text, kb.as_markup()
+    text += f"{escape(t.category.label if t.category else '—')} · {where}"
+    if t.status == PENDING:
+        text += "\nКогда придёт выписка, запись подтвердится без дубля."
+    kb.button(text="🏷 Категория", callback_data=Act(a="qcats", t=t.id))
+    kb.button(text="🗑 Удалить", callback_data=Act(a="del", t=t.id))
+    return text, fit_rows(kb)
+
+
+async def record_screenshot(
+    session: AsyncSession, payment: Payment, account_code: str, force: bool = False
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Store the payment as an expense, unless the ledger already has it."""
+    tz = get_settings().tz
+    at = payment.occurred_at.replace(tzinfo=tz) if payment.occurred_at else None
+    day = payment.occurred_at.date() if payment.occurred_at else today()
+    cats = await categories_of(session, EXPENSE)
+    if not force:
+        existing = await ledger.find_recorded(session, account_code, -payment.amount, day, at)
+        if existing is not None:
+            kb = InlineKeyboardBuilder()
+            text = f"📸 Этот платёж уже есть:\n{txn_line(existing)}"
+            if existing.review_reason in USER_FACING_REVIEW:
+                text += "\n\nКакая категория?"
+                category_grid(kb, cats, existing.id, "cat", 0)
+            else:
+                text += f"\n{escape(existing.category.label if existing.category else '—')}"
+            kb.button(text="➕ Нет, это другой платёж", callback_data=Shot(a="new"))
+            kb.adjust(1)
+            return text, kb.as_markup()
+    account = await ledger.get_account(session, account_code)
+    txn = await ledger.add_manual(
+        session,
+        account_code,
+        -payment.amount,
+        payment.counterparty,
+        day,
+        # a bank or wallet row is confirmed by its statement later, cash is final
+        status=PENDING if account.kind in ledger.STATEMENT_ACCOUNT_KINDS else POSTED,
+        source="screenshot",
+        review=True,
+        booked_at=at,
+        note=payment.remark or None,
+    )
+    if payment.to_person and txn.review_reason == REVIEW_UNCATEGORIZED:
+        # a person may be paid once for anything: the category is remembered only on request
+        txn.review_reason = REVIEW_P2P
+        await session.commit()
+    return screenshot_card(txn, cats)
+
+
+@router.message(F.photo | (F.document & F.document.mime_type.startswith("image/")))
+async def on_screenshot(message: Message, session: AsyncSession, bot: Bot, state: FSMContext) -> None:
+    if not screenshot.enabled():
+        await message.answer("📸 Скрины пока не читаю: на сервере не задан ANTHROPIC_API_KEY.")
+        return
+    file = message.photo[-1] if message.photo else message.document
+    if file.file_size and file.file_size > MAX_FILE_BYTES:
+        await message.answer("Картинка больше 15 МБ — пришли скрин поменьше.")
+        return
+    status = await message.answer("🔎 Смотрю скрин…")
+    data = (await bot.download(file)).read()
+    try:
+        payment = await screenshot.read_payment(data, "image/jpeg" if message.photo else message.document.mime_type)
+    except ScreenshotError as exc:
+        await status.edit_text(f"📸 Не записал: {escape(str(exc))}.")
+        return
+    shown = f"{fmt_money(payment.amount, payment.currency)} · {escape(payment.counterparty)}"
+    if payment.incoming:
+        await status.edit_text(f"📸 {shown} — это поступление, его возьму из выписки.")
+        return
+    if payment.currency != "MYR":
+        await status.edit_text(f"📸 {shown} — со скринов записываю только ринггиты.")
+        return
+    if names_owner(payment.counterparty):
+        await status.edit_text(f"📸 {shown} — перевод самому себе, склею его по выпискам.")
+        return
+    await state.update_data(shot=payment.to_state())
+    if payment.account is None:
+        kb = InlineKeyboardBuilder()
+        for code in ("maybank", "tng", "cash_myr"):
+            acc = await ledger.get_account(session, code)
+            kb.button(text=acc.name, callback_data=Shot(a="acc", x=acc.id))
+        await status.edit_text(f"📸 {shown} — с какого счёта платил?", reply_markup=fit_rows(kb))
+        return
+    text, markup = await record_screenshot(session, payment, payment.account)
+    await status.edit_text(text, reply_markup=markup)
+
+
+@router.callback_query(Shot.filter())
+async def cb_screenshot(query: CallbackQuery, callback_data: Shot, session: AsyncSession, state: FSMContext) -> None:
+    saved = (await state.get_data()).get("shot")
+    if not saved:
+        await query.answer("Скрин устарел — пришли его ещё раз", show_alert=True)
+        return
+    payment = Payment.from_state(saved)
+    if callback_data.a == "acc":
+        account = await session.get(Account, callback_data.x)
+        if account is None:
+            await query.answer("Счёт не найден")
+            return
+        payment.account = account.code
+        await state.update_data(shot=payment.to_state())
+    if payment.account is None:
+        await query.answer()
+        return
+    text, markup = await record_screenshot(session, payment, payment.account, force=callback_data.a == "new")
+    if callback_data.a == "new":
+        await state.update_data(shot=None)  # recorded: a second tap must not add it again
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
 
 
 # --- files ---------------------------------------------------------------------

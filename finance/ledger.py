@@ -893,9 +893,11 @@ async def add_manual(
     status: str = POSTED,
     source: str = "manual",
     review: bool = False,
+    booked_at: datetime | None = None,
+    note: str | None = None,
 ) -> Transaction:
     """Entry typed by a person (review=False: they see the category right away)
-    or pushed by a device, e.g. an Apple Pay automation (review=True)."""
+    or pushed by a device, e.g. an Apple Pay automation or a payment screenshot (review=True)."""
     account = await get_account(session, account_code)
     classifier = await Classifier.load(session)
     c = classifier.classify(description, amount, account.code, category_hint=category_code)
@@ -908,6 +910,7 @@ async def add_manual(
     txn = Transaction(
         account_id=account.id,
         booked_on=day or today(),
+        booked_at=booked_at,
         amount=amount,
         description=description,
         merchant=merchant_of(description),
@@ -915,6 +918,7 @@ async def add_manual(
         category_id=category_id,
         status=status,
         source=source,
+        note=note,
         review_reason=REVIEW_UNCATEGORIZED if review and c.review_reason == REVIEW_UNCATEGORIZED else None,
     )
     if txn.category_id is None:
@@ -924,6 +928,37 @@ async def add_manual(
     await session.commit()
     await session.refresh(txn, ["account", "category"])
     return txn
+
+
+SAME_PAYMENT_WITHIN = timedelta(minutes=10)
+
+
+async def find_recorded(
+    session: AsyncSession, account_code: str, amount: Decimal, day: date, at: datetime | None = None
+) -> Transaction | None:
+    """A row already holding this payment: the statement came first, or the same
+    screenshot was sent twice. Same account and amount, a day either way; when
+    both sides know the time, it must agree too (two coffees on one day)."""
+    account = await get_account(session, account_code)
+    rows = (
+        await session.scalars(
+            select(Transaction).where(
+                Transaction.account_id == account.id,
+                Transaction.amount == amount,
+                Transaction.booked_on.between(day - timedelta(days=1), day + timedelta(days=1)),
+                Transaction.status != REVERSED,
+                _not_deleted(),
+            )
+        )
+    ).unique().all()
+    if at is not None:
+        naive = at.replace(tzinfo=None)
+        rows = [
+            r for r in rows
+            if r.booked_at is None
+            or abs(r.booked_at.astimezone(get_settings().tz).replace(tzinfo=None) - naive) <= SAME_PAYMENT_WITHIN
+        ]
+    return min(rows, key=lambda t: abs((t.booked_on - day).days), default=None)
 
 
 def account_for_card(card: str | None, default: str = "maybank") -> str:

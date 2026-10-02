@@ -12,7 +12,7 @@ It is **single-user**: everyone deploys their own copy. Your statements stay in 
 statements ──► parsers ──► ledger (Postgres) ──► reports ──► Telegram bot / weekly & monthly messages
   PDF/CSV from          dedup, rules,              │
   bot / API            transfers, pots           └──► dashboard (/)
-Apple Pay events ──► pending rows, confirmed by the statement later
+Apple Pay events, payment screenshots ──► pending rows, confirmed by the statement later
 ```
 
 ## What it does
@@ -155,6 +155,10 @@ finance report lastweek --send            # print and send to Telegram
 finance job weekly|monthly [--force]      # the scheduled jobs, e.g. for a Railway cron
 echo '{"amount": "RM12.50", "merchant": "ZUS"}' | finance event --stdin   # a card payment from the phone
 ```
+
+### Payment screenshots
+
+A TNG or Maybank MAE payment screenshot sent to the bot (as a photo or an image file) is read by Claude (`ANTHROPIC_API_KEY`, model `SCREENSHOT_MODEL`, default `claude-opus-5`): amount, receiver, remark, date and time. It becomes a pending expense on that account, confirmed by the statement later like an Apple Pay row (the remark goes to the note). A known merchant gets its category from the rules; otherwise the bot asks right away: a shop is remembered, a transfer to a person only on request ("📌 Всегда так"). A payment the ledger already has (same account and amount, ±1 day, time within 10 min when both know it) is not added twice: the bot shows that row, asks its category if it still needs one, and offers "➕ Нет, это другой платёж". Incoming money, other currencies and transfers to the owner's own name are not recorded; for another app the bot asks which account paid.
 
 ## HTTP API
 
