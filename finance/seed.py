@@ -80,9 +80,8 @@ RULES: list[tuple[str, str | None, str | None, str | None, str | None, int]] = [
      "travel", None, None, None, 95),
     (r"UDEMY|COURSERA|GOPRACTICE|SKILLSHARE|DUOLINGO", "education", None, None, None, 100),
     (r"DONATION|CHARITY|CHARITABLE|FUNDRAIS|GOFUNDME|UNICEF|MERCY MALAYSIA", "charity", None, None, None, 100),
-    # visas, migration agents, skills assessments, language tests for a move
-    (r"MIGRATION|IMMIGRATION|IMMI\.GOV|HOME AFFAIRS|VFS\s?GLOBAL|TLS\s?CONTACT|VETASSESS|\bIELTS\b|PTE ACADEMIC|"
-     r"VISA (APPLICATION|FEE)", "relocation", None, None, None, 100),
+    # visas, migration agents, language tests for a move
+    (r"MIGRATION|IMMIGRATION|VFS\s?GLOBAL|TLS\s?CONTACT|\bIELTS\b|VISA (APPLICATION|FEE)", "relocation", None, None, None, 100),
     (r"\bFEE\b|CHARGE|\bCAJ\b|SERVICE TAX|LHDN|STAMP DUTY|\bSST\b", "fees", None, None, None, 90),
     # --- Russian keywords for manual RUB/cash entries from the bot
     (r"кафе|ресторан|кофе|обед|ужин|завтрак|еда|бар\b|доставк", "food", None, None, None, 90),

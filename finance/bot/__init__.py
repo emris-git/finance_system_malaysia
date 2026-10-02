@@ -23,6 +23,7 @@ COMMANDS = [
     BotCommand(command="ask", description="Пролезет ли покупка: спросить Claude"),
     BotCommand(command="pot", description="Копилки: /pot Holiday 15000"),
     BotCommand(command="rules", description="Запомненные правила категорий"),
+    BotCommand(command="fix", description="Поменять категорию: /fix fam apnea"),
     BotCommand(command="web", description="Ссылка на дашборд"),
     BotCommand(command="undo", description="Удалить последнюю ручную запись"),
     BotCommand(command="help", description="Что умеет бот"),

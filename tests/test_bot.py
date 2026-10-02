@@ -514,3 +514,73 @@ async def test_screenshot_that_is_not_an_expense(bot, session, screen):
 async def test_screenshot_without_a_key(bot, session):
     await send_photo(bot)
     assert "ANTHROPIC_API_KEY" in bot.session.texts()[-1]
+
+
+async def test_fix_finds_a_row_and_changes_its_category(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv", [
+            ParsedTxn(today(), Decimal("-1488.60"), "TRANSFER FROM A/C FAM APNEA SDN. BHD.* Gorbunov Mikha"),
+            ParsedTxn(today(), Decimal("-40"), "SALE DEBIT SB294-SOUTHLINK BA * KUALA LUMPUR, MY"),
+        ]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("APNEA")))
+    fun, health = await ledger.get_category(session, "fun"), await ledger.get_category(session, "health")
+    await press(bot, Act(a="cat", t=txn.id, x=fun.id, m=1))  # the wrong tap
+    edits = [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
+    buttons = [b.text for row in edits[-1].reply_markup.inline_keyboard for b in row]
+    assert "🏷 Другая категория" in buttons
+
+    await send(bot, "/fix fam  apnea")
+    assert "Какую поправить" in bot.session.texts()[-1] and "SOUTHLINK" not in bot.session.texts()[-1]
+    button = bot.session.calls[-1].reply_markup.inline_keyboard[0][0]
+    await press(bot, Act.unpack(button.callback_data))
+    markups = [c for c in bot.session.calls if type(c).__name__ == "EditMessageReplyMarkup"]
+    grid = [b.text for row in markups[-1].reply_markup.inline_keyboard for b in row]
+    assert health.label in grid
+
+    await press(bot, Act(a="cat", t=txn.id, x=health.id))
+    await session.refresh(txn)
+    assert txn.category.code == "health" and txn.kind == "expense"
+
+    await send(bot, "/fix nothing-like-this")
+    assert "Не нашёл" in bot.session.texts()[-1]
+
+
+async def test_fix_against_a_saved_rule_offers_to_move_it(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(today(), Decimal("-100"), "SALE DEBIT SB294-SOUTHLINK BA * KUALA LUMPUR, MY")]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("SB294")))
+    fun, transport = await ledger.get_category(session, "fun"), await ledger.get_category(session, "transport")
+    await press(bot, Act(a="cat", t=txn.id, x=fun.id, m=1))  # remembered SOUTHLINK → fun
+    await press(bot, Act(a="cat", t=txn.id, x=transport.id))
+    edits = [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
+    move = edits[-1].reply_markup.inline_keyboard[0][0]
+    assert move.text.startswith("📌 Всегда так")
+    await press(bot, Act.unpack(move.callback_data))
+    rule = (await ledger.user_rules(session))[0]
+    await session.refresh(rule)
+    assert rule.category_id == transport.id
+
+
+async def test_snoozed_rows_come_back_on_request(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(today(), Decimal("-200"), "DUITNOW TRANSFER TO ALI")]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("ALI")))
+    await press(bot, Act(a="skip", t=txn.id, m=1))
+    assert "Отложенных 1" in bot.session.texts()[-1]
+    button = bot.session.calls[-1].reply_markup.inline_keyboard[0][0]
+    assert button.text == "⏪ Разобрать отложенные (1)"
+
+    await press(bot, Act.unpack(button.callback_data))
+    assert "Перевод человеку" in bot.session.texts()[-1] and "ALI" in bot.session.texts()[-1]
+    assert await ledger.snoozed_count(session) == 0

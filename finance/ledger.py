@@ -860,6 +860,33 @@ async def user_rules(session: AsyncSession, limit: int = 15) -> list[CategoryRul
     )
 
 
+async def user_rule_for(session: AsyncSession, txn: Transaction) -> CategoryRule | None:
+    """The bot's own rule for this row's merchant, if one was saved."""
+    return await session.scalar(
+        select(CategoryRule).where(
+            CategoryRule.pattern == suggest_pattern(txn.description), CategoryRule.origin == "user"
+        )
+    )
+
+
+async def find_transactions(session: AsyncSession, text: str = "", limit: int = 8) -> list[Transaction]:
+    """/fix: the latest categorized rows whose description has the text (all words, any order).
+    Transfers are left out: they have their own flows in /review."""
+    conditions = [Transaction.kind != TRANSFER, Transaction.status != REVERSED, _not_deleted()]
+    for word in text.split():
+        conditions.append(Transaction.description.icontains(word, autoescape=True))
+    return list(
+        (
+            await session.scalars(
+                select(Transaction)
+                .where(*conditions)
+                .order_by(Transaction.booked_on.desc(), Transaction.id.desc())
+                .limit(limit)
+            )
+        ).unique()
+    )
+
+
 async def delete_user_rule(session: AsyncSession, rule_id: int) -> CategoryRule | None:
     """Rows the rule already categorized keep their category."""
     rule = await session.get(CategoryRule, rule_id)
@@ -1056,6 +1083,17 @@ async def snooze(session: AsyncSession, txn: Transaction, days: int = SNOOZE_DAY
     """"Пропустить": out of the queue for a week, then asked again."""
     txn.review_snoozed_until = today() + timedelta(days=days)
     await session.commit()
+
+
+async def unsnooze_all(session: AsyncSession) -> int:
+    """"Разобрать отложенные": skipped rows come back to the queue now, not in a week."""
+    rows = (
+        await session.scalars(select(Transaction).where(_needs_answer(), Transaction.review_snoozed_until > today()))
+    ).unique().all()
+    for row in rows:
+        row.review_snoozed_until = None
+    await session.commit()
+    return len(rows)
 
 
 async def review_queue(session: AsyncSession, limit: int = 20) -> list[Transaction]:

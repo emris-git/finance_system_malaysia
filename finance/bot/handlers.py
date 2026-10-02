@@ -78,6 +78,8 @@ HELP = """💰 <b>Финансовый бот</b>
 • /plan — будущие траты: <code>/plan 1800 отель Бали 25.10</code>, <code>/plan 12000 переезд март 2027</code>, <code>/plan 2000 РФ ежемесячно с 03.10 #перевод</code>
 • /ask — спросить Claude, пролезет ли покупка: <code>/ask ноутбук за 6000 в декабре</code>
 Категорию для незнакомого магазина запоминаю сразу — дальше такие ставлю сам. Список и удаление: /rules
+Ошибся категорией: <code>/fix fam apnea</code> — найду транзакцию и дам выбрать другую (просто /fix — последние)
+Отложенные (⏭) вернутся через неделю или сразу — кнопкой в конце /review
 
 По понедельникам пришлю отчёт за неделю, наутро после зарплаты — за месяц."""
 
@@ -229,7 +231,10 @@ async def send_next_review(message: Message, session: AsyncSession, state: FSMCo
     if not queue:
         later = await ledger.snoozed_count(session)
         text = "🎉 Всё разобрано." + (f" Отложенных {later} — вернутся через неделю." if later else "")
-        await message.answer(text)
+        kb = InlineKeyboardBuilder()
+        if later:
+            kb.button(text=f"⏪ Разобрать отложенные ({later})", callback_data=Act(a="later", t=0))
+        await message.answer(text, reply_markup=kb.as_markup() if later else None)
         return
     text, markup = await review_card(session, queue[0], await ledger.review_count(session))
     await message.answer(text, reply_markup=markup)
@@ -397,6 +402,31 @@ async def cmd_web(message: Message) -> None:
 
 class RuleCb(CallbackData, prefix="r"):
     r: int
+
+
+def fix_view(rows: list[Transaction]) -> tuple[str, InlineKeyboardMarkup]:
+    lines, kb = [], InlineKeyboardBuilder()
+    for n, t in enumerate(rows, 1):
+        category = t.category.label if t.category else "без категории"
+        lines.append(f"{n}. {txn_line(t)}\n{escape(category)}")
+        amount = fmt_money(t.amount, t.account.currency, signed=True)
+        expense = t.kind == EXPENSE or t.amount < 0  # a refund sits in an expense category
+        kb.button(text=f"{n}. {amount} · {fmt_day(t.booked_on)}", callback_data=Act(a="cats", t=t.id, x=int(expense)))
+    return "🏷 Какую поправить?\n\n" + "\n\n".join(lines), fit_rows(kb)
+
+
+@router.message(Command("fix"))
+async def cmd_fix(message: Message, session: AsyncSession, command: CommandObject) -> None:
+    query = (command.args or "").strip()
+    rows = await ledger.find_transactions(session, query)
+    if not rows:
+        await message.answer(
+            f"Не нашёл «{escape(query)}». Ищу по описанию из выписки, например <code>/fix grab</code>."
+            if query else "Пока нечего поправлять."
+        )
+        return
+    text, markup = fix_view(rows)
+    await message.answer(text, reply_markup=markup)
 
 
 async def rules_view(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -603,6 +633,14 @@ async def cb_start(query: CallbackQuery, session: AsyncSession, state: FSMContex
     await send_next_review(query.message, session, state)
 
 
+@router.callback_query(Act.filter(F.a == "later"))
+async def cb_unsnooze(query: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    await ledger.unsnooze_all(session)
+    await query.message.edit_reply_markup(reply_markup=None)
+    await query.answer()
+    await send_next_review(query.message, session, state)
+
+
 @router.callback_query(Act.filter())
 async def cb_action(query: CallbackQuery, callback_data: Act, session: AsyncSession, state: FSMContext) -> None:
     txn = await load_txn(session, callback_data.t)
@@ -646,11 +684,18 @@ async def cb_action(query: CallbackQuery, callback_data: Act, session: AsyncSess
             extra = f", ещё {updated} таких уже разобрал" if updated else ""
             done += f"\n\n📌 Запомнил «{escape(rule_label(rule.pattern))}» → дальше сюда само{extra}"
             kb.button(text="↩️ Не запоминать", callback_data=Act(a="unrule", t=txn.id, x=rule.id))
-            markup = kb.as_markup()
-        elif was in (REVIEW_P2P, REVIEW_P2P_IN):
-            label = rule_label(suggest_pattern(txn.description))
-            kb.button(text=f"📌 Всегда так для «{label[:30]}»", callback_data=Act(a="rem", t=txn.id, x=category.id))
-            markup = kb.as_markup()
+        else:
+            # a payment to a person may be a one-off; a fix may go against a saved rule
+            old_rule = await ledger.user_rule_for(session, txn)
+            if was in (REVIEW_P2P, REVIEW_P2P_IN) or (old_rule and old_rule.category_id != category.id):
+                label = rule_label(suggest_pattern(txn.description))
+                kb.button(text=f"📌 Всегда так для «{label[:30]}»", callback_data=Act(a="rem", t=txn.id, x=category.id))
+        # a wrong tap is fixed right here
+        kb.button(
+            text="🏷 Другая категория", callback_data=Act(a="cats", t=txn.id, x=int(category.kind == EXPENSE))
+        )
+        kb.adjust(1)
+        markup = kb.as_markup()
 
     elif a == "rem":
         category = await ledger.get_category(session, callback_data.x)
