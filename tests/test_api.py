@@ -177,3 +177,21 @@ async def test_unknown_apple_pay_merchant_asks_for_category(client, monkeypatch)
     assert "какая категория" in text and "MYSTERY KIOSK" in text
     buttons = [row[0].text for row in markup.inline_keyboard]
     assert "🚕 Транспорт" in buttons
+
+
+async def test_search_finds_a_row_from_any_month_to_fix(client, session):
+    from finance import ledger
+    from finance.parsers import ParsedStatement, ParsedTxn
+
+    old = today() - timedelta(days=260)
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(old, Decimal("-1488.60"), "TRANSFER FROM A/C ACME TRADING SDN. BHD.* Morgan Ale")]),
+        origin="test",
+    )
+    in_month = (await client.get("/api/transactions?q=ACME", headers=TOKEN)).json()
+    assert in_month["total"] == 0  # the default period is this month
+    (txn,) = (await client.get("/api/transactions?q=acme&anytime=true", headers=TOKEN)).json()["items"]
+    r = await client.patch(f"/api/transactions/{txn['id']}", headers=TOKEN, json={"category": "health"})
+    assert r.json()["category"] == "health" and r.json()["kind"] == "expense"

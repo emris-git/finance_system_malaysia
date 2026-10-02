@@ -307,13 +307,14 @@ async def api_transactions(
     kind: str | None = None,
     q: str | None = None,
     review: bool = False,
+    anytime: bool = False,  # the dashboard search: find a row from any month to fix it
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     conditions = [Transaction.deleted_at.is_(None)]
     if review:
         conditions.append(ledger.review_filter())
-    else:
+    elif not anytime:
         s, e = _period(start, end)
         conditions.append(Transaction.booked_on.between(s, e))
     if account:

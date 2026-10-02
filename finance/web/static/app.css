@@ -114,6 +114,7 @@ table.data .meta { color: var(--muted); font-size: 12px; }
 .amount-in { color: var(--good); }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 .table-scroll { overflow-x: auto; }
+table.data .show-sm { display: none; }
 
 .review-item { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
 .review-item:last-child { border-bottom: 0; }
@@ -141,6 +142,8 @@ table.data .meta { color: var(--muted); font-size: 12px; }
   .review-item { grid-template-columns: 1fr; }
   .review-item .actions { justify-content: flex-start; }
   table.data .hide-sm { display: none; }
+  table.data .show-sm { display: block; margin-top: 4px; }
+  table.data .show-sm select { width: 100%; max-width: 100%; }
   .bar-row { grid-template-columns: minmax(0, 7.5em) 1fr auto; gap: 8px; }
 }
 

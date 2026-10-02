@@ -639,7 +639,9 @@ function txRow(t) {
   const meta = [t.account_name, t.status === "pending" ? "ждёт выписку" : null, t.note].filter(Boolean).join(" · ");
   return el("tr", {},
     el("td", { class: "meta", text: fmtDay(t.date) }),
-    el("td", { class: "desc" }, el("div", { text: t.description }), el("div", { class: "meta", text: meta })),
+    el("td", { class: "desc" }, el("div", { text: t.description }), el("div", { class: "meta", text: meta }),
+      // on a phone the category column is hidden: the category goes under the description
+      el("div", { class: "show-sm" }, txCategoryCell(t))),
     el("td", { class: "hide-sm" }, txCategoryCell(t)),
     el("td", { class: `num ${num(t.amount) > 0 ? "amount-in" : ""}`, text: fmtMoney(t.amount, t.currency, true) }),
   );
@@ -647,10 +649,17 @@ function txRow(t) {
 
 async function loadTx(reset = true) {
   if (reset) state.txOffset = 0;
-  const params = new URLSearchParams({ start: state.start, end: state.end, limit: 100, offset: state.txOffset });
+  const params = new URLSearchParams({ limit: 100, offset: state.txOffset });
   for (const [key, id] of [["account", "#f-account"], ["category", "#f-category"], ["kind", "#f-kind"], ["q", "#f-q"]]) {
     const v = $(id).value.trim();
     if (v) params.set(key, v);
+  }
+  // a search looks through every month: an old row can be found and its category fixed
+  const anytime = params.has("q");
+  if (anytime) params.set("anytime", "true");
+  else {
+    params.set("start", state.start);
+    params.set("end", state.end);
   }
   const data = await api(`/api/transactions?${params}`);
   const table = $("#tx-table");
@@ -663,7 +672,7 @@ async function loadTx(reset = true) {
   const body = table.querySelector("tbody");
   for (const t of data.items) body.append(txRow(t));
   state.txOffset += data.items.length;
-  $("#tx-count").textContent = `${data.total} шт.`;
+  $("#tx-count").textContent = `${data.total} шт.${anytime ? " за всё время" : ""}`;
   $("#tx-more").hidden = state.txOffset >= data.total;
 }
 
