@@ -59,7 +59,7 @@ HELP = """💰 <b>Финансовый бот</b>
 
 <b>Перевод на РФ</b> (отдал ринггиты — получил рубли):
 • в /review нажми 🇷🇺 у перевода и напиши, сколько ₽ пришло
-• или сразу: <code>/rf 1000 21500</code> (<code>/rf 1000 21500 tng</code> — если платил с TNG)
+• или сразу: <code>/rf 1000 21500</code> (<code>/rf 1000 21500 24.09</code> — с датой, <code>… tng</code> — если платил с TNG)
 
 <b>Вернули ринггитами за рубли</b> (заплатил рублями за кого-то или перевёл ему рубли): в /review у поступления нажми
 • ↩️ «Возврат за расход в ₽» и выбери рублёвый расход — он перестанет считаться твоим
@@ -287,14 +287,18 @@ async def cmd_review(message: Message, session: AsyncSession, state: FSMContext)
 async def cmd_rf(message: Message, session: AsyncSession, command: CommandObject) -> None:
     parsed = parse_rf_command(command.args or "")
     if not parsed:
-        await message.answer("Формат: <code>/rf 1000 21500</code> — RM ушло, ₽ пришло. Добавь <code>tng</code>, если платил с TNG.")
+        await message.answer(
+            "Формат: <code>/rf 1000 21500</code> — RM ушло, ₽ пришло. Добавь дату <code>24.09</code>, если перевод был раньше, "
+            "и <code>tng</code>, если платил с TNG."
+        )
         return
-    myr, rub, account = parsed
-    transfer = await ledger.record_fx(session, myr, rub, account)
-    await message.answer(
-        f"🇷🇺 Записал: {fmt_money(myr)} → {fmt_money(rub, 'RUB')} (курс {transfer.rate:.2f}).\n"
-        f"Когда придёт выписка {'TNG' if account == 'tng' else 'Maybank'}, перевод подтвердится сам."
-    )
+    myr, rub, account, day = parsed
+    transfer = await ledger.record_fx(session, myr, rub, account, day)
+    if any(leg.status == PENDING for leg in await ledger.transfer_legs(session, transfer.id)):
+        tail = f"Когда придёт выписка {'TNG' if account == 'tng' else 'Maybank'}, перевод подтвердится сам."
+    else:
+        tail = "Нашёл этот перевод в выписке и привязал."
+    await message.answer(f"🇷🇺 Записал: {fmt_money(myr)} → {fmt_money(rub, 'RUB')} (курс {transfer.rate:.2f}).\n{tail}")
 
 
 @router.message(Command("balance"))

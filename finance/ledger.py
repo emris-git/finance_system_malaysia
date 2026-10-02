@@ -689,11 +689,29 @@ async def record_fx(
     day: date | None = None,
     note: str | None = None,
 ) -> Transfer:
-    """RF transfer typed into the bot before the bank statement arrives.
+    """RF transfer typed into the bot, before the bank statement arrives or after it.
 
-    The MYR leg is pending; the statement row with the same amount confirms it.
+    A statement row already imported with that amount near `day` is the MYR leg;
+    otherwise the leg is pending and the statement row with the same amount confirms it.
     """
     account = await get_account(session, from_account)
+    if day is not None:
+        posted = await session.scalars(
+            select(Transaction)
+            .where(
+                Transaction.account_id == account.id,
+                Transaction.amount == -abs(myr_amount),
+                Transaction.status == POSTED,
+                Transaction.transfer_id.is_(None),
+                Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+                _not_deleted(),
+            )
+            .order_by(Transaction.booked_on)
+        )
+        found = min(posted.unique(), key=lambda t: abs((t.booked_on - day).days), default=None)
+        if found is not None:
+            await session.refresh(found, ["account"])
+            return await mark_fx(session, found, rub_amount, note)
     out = Transaction(
         account_id=account.id,
         booked_on=day or today(),

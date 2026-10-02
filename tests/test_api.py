@@ -144,7 +144,8 @@ def test_quick_entry():
     assert (parse_entry("+5 USDT кэшбэк", coins).amount, parse_entry("usdt 15 кофе", coins).currency) == (5, "USDT")
     assert parse_entry("15 coffee", coins).currency == "RUB"  # not a known coin
     assert parse_entry("15 usdt", coins) is None  # no description, like "1500₽"
-    assert parse_rf_command("1000 21500 tng") == (1000, 21500, "tng")
+    assert parse_rf_command("1000 21500 tng") == (1000, 21500, "tng", None)
+    assert parse_rf_command("2000 39373,6 tng 02.03") == (2000, Decimal("39373.6"), "tng", date(today().year, 3, 2))
     assert parse_rf_command("1000") is None
 
 

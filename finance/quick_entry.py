@@ -123,8 +123,8 @@ def _explicit_day(description: str) -> tuple[date, str] | None:
     return None
 
 
-def parse_rf_command(args: str) -> tuple[Decimal, Decimal, str] | None:
-    """`/rf 1000 21500 [tng]` -> (myr, rub, account)."""
+def parse_rf_command(args: str) -> tuple[Decimal, Decimal, str, date | None] | None:
+    """`/rf 1000 21500 [24.09] [tng]` -> (myr, rub, account, day); no day = just made."""
     parts = args.replace(",", ".").split()
     if len(parts) < 2:
         return None
@@ -132,10 +132,13 @@ def parse_rf_command(args: str) -> tuple[Decimal, Decimal, str] | None:
         myr, rub = to_decimal(parts[0]), to_decimal(parts[1])
     except ValueError:
         return None
-    account = "tng" if len(parts) > 2 and parts[2].lower() in ("tng", "тнг") else "maybank"
     if myr <= 0 or rub <= 0:
         return None
-    return myr, rub, account
+    rest = " ".join(parts[2:])
+    account = "tng" if re.search(r"(?<!\S)(tng|тнг)(?!\S)", rest, re.IGNORECASE) else "maybank"
+    rest = re.sub(r"(?<!\S)(tng|тнг)(?!\S)", " ", rest, flags=re.IGNORECASE)
+    dated = _explicit_day(rest)
+    return myr, rub, account, dated[0] if dated else None
 
 
 CRYPTO_AMOUNT_RE = re.compile(

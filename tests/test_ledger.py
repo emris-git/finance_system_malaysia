@@ -115,6 +115,19 @@ async def test_rf_typed_in_bot_is_confirmed_by_statement(session):
     assert "ALI BIN ABU" in pending.description
 
 
+async def test_rf_with_date_links_statement_row_already_imported(session):
+    day = today() - timedelta(days=40)
+    await ledger.import_statement(
+        session, maybank((day, "-2000.00", "DUITNOW TRANSFER TO STEPAN V")), origin="test", file_bytes=b"old"
+    )
+    posted = await txn_by_desc(session, "DUITNOW TRANSFER")
+    transfer = await ledger.record_fx(session, D("2000"), D("39373.6"), "maybank", day + timedelta(days=1))
+    await session.refresh(posted)
+    assert posted.transfer_id == transfer.id and posted.status == POSTED
+    assert transfer.rate == D("19.686800")
+    assert await session.scalar(select(Transaction).where(Transaction.status == PENDING)) is None
+
+
 async def test_rf_merge_when_amount_differs_by_fee(session):
     day = today() - timedelta(days=2)
     await ledger.record_fx(session, D("500"), D("10750"), "maybank", day)
