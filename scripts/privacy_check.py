@@ -65,7 +65,7 @@ WORKFLOW_PATTERNS = [
     ("workflow runs with secrets on untrusted code", re.compile(r"\bpull_request_target\b")),
     ("workflow pipes a download into a shell", re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba|z)?sh\b")),
 ]
-WORD = re.compile(r"[^\W\d_]{3,}|\w{3,}", re.UNICODE)
+WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
 
 
 def word_hash(word: str) -> str:
