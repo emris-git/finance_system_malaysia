@@ -123,6 +123,7 @@ async def test_mark_fx_via_api(client):
 
 
 def test_quick_entry():
+    assert parse_entry("1500 rub такси").amount == -1500 and parse_entry("1500 rub такси").currency == "RUB"
     e = parse_entry("1 500₽ такси вчера")
     assert (e.amount, e.currency, e.description, e.day) == (-1500, "RUB", "такси", today() - timedelta(days=1))
     e = parse_entry("25.5 rm обед")
