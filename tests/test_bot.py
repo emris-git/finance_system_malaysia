@@ -520,19 +520,19 @@ async def test_fix_finds_a_row_and_changes_its_category(bot, session):
     await ledger.import_statement(
         session,
         ParsedStatement("maybank", "maybank_csv", [
-            ParsedTxn(today(), Decimal("-1488.60"), "TRANSFER FROM A/C FAM APNEA SDN. BHD.* Gorbunov Mikha"),
+            ParsedTxn(today(), Decimal("-1488.60"), "TRANSFER FROM A/C ACME TRADING SDN. BHD.* Morgan Ale"),
             ParsedTxn(today(), Decimal("-40"), "SALE DEBIT SB294-SOUTHLINK BA * KUALA LUMPUR, MY"),
         ]),
         origin="test",
     )
-    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("APNEA")))
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("ACME")))
     fun, health = await ledger.get_category(session, "fun"), await ledger.get_category(session, "health")
     await press(bot, Act(a="cat", t=txn.id, x=fun.id, m=1))  # the wrong tap
     edits = [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
     buttons = [b.text for row in edits[-1].reply_markup.inline_keyboard for b in row]
     assert "🏷 Другая категория" in buttons
 
-    await send(bot, "/fix fam  apnea")
+    await send(bot, "/fix acme  trading")
     assert "Какую поправить" in bot.session.texts()[-1] and "SOUTHLINK" not in bot.session.texts()[-1]
     button = bot.session.calls[-1].reply_markup.inline_keyboard[0][0]
     await press(bot, Act.unpack(button.callback_data))
