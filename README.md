@@ -191,3 +191,11 @@ Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. M
 ## License
 
 [MIT](LICENSE)
+
+## Contributing: privacy gate
+
+This repo is public, so every change is scanned for personal data and secrets (`scripts/privacy_check.py`): bot tokens, API keys, e-mails, deployed domains, home paths, account-like numbers, statements, and personal words kept only as SHA-256 hashes.
+
+- CI: `.github/workflows/privacy.yml` runs on every PR and push; mark the `privacy` and `pytest` checks as required in branch protection so nothing merges red. Optional repo secret `PRIVACY_DENYLIST` holds the word hashes.
+- Local: `scripts/install-hooks.sh` enables pre-commit and pre-push hooks. Claude Code sessions get the same check through `.claude/settings.json` before a push, PR or merge.
+- Add a name: `python3 scripts/privacy_check.py --hash "First Last" >> .privacy-denylist`.

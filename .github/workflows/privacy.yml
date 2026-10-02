@@ -1,0 +1,27 @@
+name: privacy
+
+# Blocks a PR that adds personal data or secrets (see scripts/privacy_check.py).
+# Make it required: Settings -> Branches -> branch protection -> "privacy" and "pytest".
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    env:
+      # optional repo secret: SHA-256 hashes of personal words, one per line (never the words)
+      PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: What the PR adds
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/privacy_check.py --base "origin/${{ github.base_ref }}"
+      - name: Whole tree
+        run: python3 scripts/privacy_check.py --all
