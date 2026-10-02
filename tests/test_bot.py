@@ -91,6 +91,14 @@ async def test_help_and_rub_entry(bot, session):
     assert "Удалил" in bot.session.texts()[-1]
 
 
+async def test_multi_line_entries(bot, session):
+    await send(bot, "1500 rub такси\n300 rub кофе\nчто-то непонятное\n+5000 rub кэшбэк")
+    reply = bot.session.texts()[-1]
+    assert "Записал 3 из 4" in reply and "что-то непонятное" in reply
+    rows = (await session.scalars(select(Transaction).where(Transaction.description.in_(["такси", "кофе", "кэшбэк"])))).all()
+    assert sorted(r.amount for r in rows) == [Decimal("-1500"), Decimal("-300"), Decimal("5000")]
+
+
 async def test_review_rf_flow(bot, session):
     await ledger.import_statement(
         session,

@@ -53,6 +53,7 @@ HELP = """💰 <b>Финансовый бот</b>
 • <code>+5000 rub кэшбэк</code> — поступление в рублях
 • <code>25 rm обед вчера</code> — наличные ринггиты
 • <code>1500 rub 24.09 такси #транспорт</code> — с датой (ДД.ММ или ДД.ММ.ГГГГ) и категорией
+• несколько записей — каждая с новой строки в одном сообщении
 
 <b>Скрин оплаты</b> — пришли скриншот успешного платежа из TNG или MAE: запишу расход и спрошу категорию, если сам не пойму. Когда придёт выписка, запись подтвердится без дубля.
 
@@ -1117,15 +1118,8 @@ async def cb_plan(query: CallbackQuery, callback_data: PlanCb, session: AsyncSes
 # --- free text: manual entries ---------------------------------------------------
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def on_text(message: Message, session: AsyncSession) -> None:
-    entry = parse_entry(message.text, {*KNOWN_COINS, *await ledger.crypto_tickers(session)})
-    if entry is None:
-        await message.answer(
-            "Не понял. Примеры: <code>1500 rub такси</code>, <code>25 rm обед</code>, <code>15 usdt кофе</code>, "
-            "<code>/rf 1000 21500</code>. /help"
-        )
-        return
+async def _add_entry(session: AsyncSession, entry) -> tuple[Transaction, str | None]:
+    """Store one parsed entry; returns the transaction and a warning when the #category did not fit."""
     if entry.currency == "RUB":
         account = "ru"
     elif entry.currency == "MYR":
@@ -1138,7 +1132,43 @@ async def on_text(message: Message, session: AsyncSession) -> None:
     txn = await ledger.add_manual(
         session, account, entry.amount, entry.description, entry.day, category.code if category else None
     )
-    text, markup = entry_card(txn)
+    warn = None
     if entry.category and (category is None or txn.category_id != category.id):
-        text += f"\n\n⚠️ Категория «#{escape(entry.category)}» не подошла — поставил по правилам, поменять: 🏷"
+        warn = f"Категория «#{escape(entry.category)}» не подошла — поставил по правилам"
+    return txn, warn
+
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def on_text(message: Message, session: AsyncSession) -> None:
+    coins = {*KNOWN_COINS, *await ledger.crypto_tickers(session)}
+    lines = [ln for ln in message.text.splitlines() if ln.strip()]
+    if len(lines) > 1:  # one entry per line
+        done, failed = [], []
+        for ln in lines:
+            entry = parse_entry(ln, coins)
+            if entry is None:
+                failed.append(f"• <code>{escape(ln.strip())}</code>")
+                continue
+            txn, warn = await _add_entry(session, entry)
+            row = (
+                f"• {fmt_money(txn.amount, txn.account.currency, signed=True)} · {escape(txn.description)} · "
+                f"{escape(txn.category.label if txn.category else '—')} · {fmt_day(txn.booked_on)}"
+            )
+            done.append(row + (f"\n  ⚠️ {warn}" if warn else ""))
+        text = f"✅ Записал {len(done)} из {len(lines)}:\n" + "\n".join(done) if done else ""
+        if failed:
+            text += ("\n\n" if text else "") + "❓ Не понял, эти строки не записал:\n" + "\n".join(failed)
+        await message.answer(text)
+        return
+    entry = parse_entry(message.text, coins)
+    if entry is None:
+        await message.answer(
+            "Не понял. Примеры: <code>1500 rub такси</code>, <code>25 rm обед</code>, <code>15 usdt кофе</code>, "
+            "<code>/rf 1000 21500</code>. /help"
+        )
+        return
+    txn, warn = await _add_entry(session, entry)
+    text, markup = entry_card(txn)
+    if warn:
+        text += f"\n\n⚠️ {warn}, поменять: 🏷"
     await message.answer(text, reply_markup=markup)
