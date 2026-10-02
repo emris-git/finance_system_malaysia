@@ -22,7 +22,7 @@ dependencies = [
     "apscheduler>=3.11,<4",
     "python-multipart>=0.0.32",
     "httpx>=0.28,<0.29",
-    # /ask: the budget advisor (optional at runtime: without ANTHROPIC_API_KEY it is off)
+    # /ask (budget advisor) and payment screenshots; both are off at runtime without ANTHROPIC_API_KEY
     "anthropic>=1.8,<2",
 ]
 

@@ -70,9 +70,16 @@
 
     <section class="card">
       <div class="card-head">
-        <h2>Категории, RM</h2><span class="hint" id="cat-hint">черта — среднее за 3 прошлых таких же периода</span>
+        <h2>Категории, RM</h2><span class="hint" id="cat-hint">черта — траты за 3 предыдущих отрезка такой же длины (в днях), в среднем</span>
       </div>
       <div class="bars" id="cat-bars"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Категории к прошлым циклам, RM</h2><span class="hint" id="cycle-hint"></span>
+      </div>
+      <div class="bars" id="cycle-bars"></div>
     </section>
 
     <section class="card">
@@ -124,7 +131,7 @@
           <option value="">Все типы</option><option value="expense">Расходы</option>
           <option value="income">Доходы</option><option value="transfer">Переводы</option>
         </select>
-        <input type="search" id="f-q" placeholder="Поиск по описанию" aria-label="Поиск">
+        <input type="search" id="f-q" placeholder="Поиск по описанию — за всё время" aria-label="Поиск по описанию за всё время">
       </div>
       <div class="table-scroll"><table class="data" id="tx-table"></table></div>
       <button class="btn more" id="tx-more" hidden>Показать ещё</button>

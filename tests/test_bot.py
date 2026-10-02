@@ -91,6 +91,14 @@ async def test_help_and_rub_entry(bot, session):
     assert "Удалил" in bot.session.texts()[-1]
 
 
+async def test_multi_line_entries(bot, session):
+    await send(bot, "1500 rub такси\n300 rub кофе\nчто-то непонятное\n+5000 rub кэшбэк")
+    reply = bot.session.texts()[-1]
+    assert "Записал 3 из 4" in reply and "что-то непонятное" in reply
+    rows = (await session.scalars(select(Transaction).where(Transaction.description.in_(["такси", "кофе", "кэшбэк"])))).all()
+    assert sorted(r.amount for r in rows) == [Decimal("-1500"), Decimal("-300"), Decimal("5000")]
+
+
 async def test_review_rf_flow(bot, session):
     await ledger.import_statement(
         session,
@@ -142,10 +150,21 @@ async def test_review_category_is_remembered_with_undo(bot, session):
 async def test_rf_command_and_month(bot, session):
     await send(bot, "/rf 1000 21500")
     assert "подтвердится сам" in bot.session.texts()[-1]
+    await send(bot, "/rf 1000 21500")
+    assert "уже записан" in bot.session.texts()[-1]
     await send(bot, "/month")
     assert "На РФ" in bot.session.texts()[-1]
     await send(bot, "/web")
     assert "auth/magic" in bot.session.texts()[-1]
+
+
+async def test_rm_command_and_duplicate(bot, session):
+    await send(bot, "/rm 59259.9 3100 12.02")
+    assert "подтвердится само" in bot.session.texts()[-1]
+    await send(bot, "/rm 59259.9 3100 12.02")
+    assert "уже записан" in bot.session.texts()[-1]
+    await send(bot, "/rm 1000")
+    assert "не нашёл" in bot.session.texts()[-1]
 
 
 async def test_skip_does_not_come_back_and_own_offers_pots(bot, session):
@@ -377,3 +396,210 @@ async def test_apple_pay_category_from_the_push(bot, session):
     assert bot.session.texts()[-1] == edits[-1].text  # no /review card follows
     await session.refresh(txn)
     assert txn.review_reason is None
+
+
+# --- payment screenshots ---------------------------------------------------------
+
+
+async def send_photo(bot, uid=OWNER):
+    n = next(_ids)
+    msg = {"message_id": n, "date": int(datetime.now().timestamp()), "chat": {"id": uid, "type": "private"},
+           "from": _user(uid), "photo": [{"file_id": "f", "file_unique_id": "u", "width": 590, "height": 1320}]}
+    await get_dispatcher().feed_update(bot, Update.model_validate({"update_id": n, "message": msg}, context={"bot": bot}))
+
+
+@pytest.fixture
+def screen(monkeypatch):
+    """The screenshot the bot will "see": the model's JSON answer."""
+    import io
+
+    from finance import screenshot
+
+    shown = {}
+    monkeypatch.setattr(screenshot, "enabled", lambda: True)
+    monkeypatch.setattr(Bot, "download", lambda self, file, *a, **kw: _async(io.BytesIO(b"img")))
+
+    async def read_payment(image, media_type):
+        return screenshot.payment_from(shown)
+
+    monkeypatch.setattr(screenshot, "read_payment", read_payment)
+    return shown
+
+
+async def _async(value):
+    return value
+
+
+def tng_transfer(day, **over):
+    return {
+        "is_payment": True, "app": "tng", "direction": "out", "amount": "15.00", "currency": "MYR",
+        "counterparty": "TAN MEI LING", "remark": "TAN MEI LING",
+        "occurred_at": f"{day.isoformat()} 19:44", "to_person": True, "failure_reason": "", **over,
+    }
+
+
+def edits(bot):
+    return [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
+
+
+async def test_screenshot_to_a_person_asks_and_the_statement_confirms(bot, session, screen):
+    from finance.models import PENDING, POSTED, REVIEW_P2P
+
+    day = today() - timedelta(days=1)
+    screen.update(tng_transfer(day))
+    await send_photo(bot)
+    card = edits(bot)[-1]
+    assert "📸 Записал: <b>−RM 15.00</b> · TAN MEI LING" in card.text and "Какая категория?" in card.text
+    assert "(TAN MEI LING)" not in card.text  # the remark only repeated the receiver
+    txn = await session.scalar(select(Transaction).where(Transaction.source == "screenshot"))
+    assert (txn.account.code, txn.booked_on, txn.status, txn.review_reason) == ("tng", day, PENDING, REVIEW_P2P)
+    from finance.config import get_settings
+    local = txn.booked_at.astimezone(get_settings().tz)
+    assert (local.hour, local.minute) == (19, 44)  # the app's time is Kuala Lumpur time
+
+    food = next(row[0] for row in card.reply_markup.inline_keyboard if row[0].text == "🍜 Еда вне дома")
+    await press(bot, Act.unpack(food.callback_data))
+    assert "Всегда так для «TAN … MEI»" in edits(bot)[-1].reply_markup.inline_keyboard[0][0].text  # not auto-remembered
+
+    from finance.parsers import ParsedStatement, ParsedTxn
+    result = await ledger.import_statement(
+        session,
+        ParsedStatement("tng", "tng_pdf", [ParsedTxn(day, Decimal("-15.00"), "TAN MEI LING", raw_type="Transfer to Wallet")]),
+        origin="test",
+    )
+    assert (result.new, result.reconciled) == (0, 1)
+    await session.refresh(txn)
+    assert (txn.status, txn.category.code, txn.kind) == (POSTED, "food", "expense")
+
+
+async def test_screenshot_of_a_known_shop_needs_no_question(bot, session, screen):
+    screen.update(tng_transfer(today(), counterparty="STARBUCKS PAVILION", remark="", to_person=False))
+    await send_photo(bot)
+    card = edits(bot)[-1]
+    assert "🍜 Еда вне дома · TNG eWallet" in card.text and "подтвердится без дубля" in card.text
+    assert [b.text for row in card.reply_markup.inline_keyboard for b in row] == ["🏷 Категория", "🗑 Удалить"]
+
+
+async def test_screenshot_already_in_the_statement(bot, session, screen):
+    from finance.parsers import ParsedStatement, ParsedTxn
+
+    day = today() - timedelta(days=2)
+    await ledger.import_statement(
+        session,
+        ParsedStatement("tng", "tng_pdf", [ParsedTxn(day, Decimal("-15.00"), "TAN MEI LING", raw_type="Transfer to Wallet")]),
+        origin="test",
+    )
+    screen.update(tng_transfer(day))
+    await send_photo(bot)
+    card = edits(bot)[-1]
+    assert "уже есть" in card.text and "Какая категория?" in card.text
+    assert await session.scalar(select(Transaction).where(Transaction.source == "screenshot")) is None
+
+    again = card.reply_markup.inline_keyboard[-1][0]
+    assert again.text == "➕ Нет, это другой платёж"
+    from finance.bot.handlers import Shot
+    await press(bot, Shot.unpack(again.callback_data))
+    assert "📸 Записал" in edits(bot)[-1].text
+    await press(bot, Shot.unpack(again.callback_data))  # a second tap adds nothing
+    rows = (await session.scalars(select(Transaction).where(Transaction.source == "screenshot"))).all()
+    assert len(rows) == 1
+
+
+async def test_screenshot_from_another_app_asks_the_account(bot, session, screen):
+    screen.update(tng_transfer(today(), app="other", to_person=False, counterparty="KEDAI RUNCIT AH HOCK"))
+    await send_photo(bot)
+    card = edits(bot)[-1]
+    assert "с какого счёта" in card.text
+    cash = next(b for row in card.reply_markup.inline_keyboard for b in row if b.text == "Наличные RM")
+    from finance.bot.handlers import Shot
+    await press(bot, Shot.unpack(cash.callback_data))
+    txn = await session.scalar(select(Transaction).where(Transaction.source == "screenshot"))
+    assert (txn.account.code, txn.status) == ("cash_myr", "posted")
+
+
+async def test_screenshot_that_is_not_an_expense(bot, session, screen):
+    screen.update(tng_transfer(today(), is_payment=False, failure_reason="это список транзакций"))
+    await send_photo(bot)
+    assert edits(bot)[-1].text == "📸 Не записал: это список транзакций."
+    screen.update(tng_transfer(today(), direction="in"))
+    await send_photo(bot)
+    assert "поступление" in edits(bot)[-1].text
+    screen.update(tng_transfer(today(), counterparty="MORGAN ALEX"))
+    await send_photo(bot)
+    assert "самому себе" in edits(bot)[-1].text
+    assert await session.scalar(select(Transaction).where(Transaction.source == "screenshot")) is None
+
+
+async def test_screenshot_without_a_key(bot, session):
+    await send_photo(bot)
+    assert "ANTHROPIC_API_KEY" in bot.session.texts()[-1]
+
+
+async def test_fix_finds_a_row_and_changes_its_category(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv", [
+            ParsedTxn(today(), Decimal("-1488.60"), "TRANSFER FROM A/C ACME TRADING SDN. BHD.* Morgan Ale"),
+            ParsedTxn(today(), Decimal("-40"), "SALE DEBIT SB294-SOUTHLINK BA * KUALA LUMPUR, MY"),
+        ]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("ACME")))
+    fun, health = await ledger.get_category(session, "fun"), await ledger.get_category(session, "health")
+    await press(bot, Act(a="cat", t=txn.id, x=fun.id, m=1))  # the wrong tap
+    edits = [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
+    buttons = [b.text for row in edits[-1].reply_markup.inline_keyboard for b in row]
+    assert "🏷 Другая категория" in buttons
+
+    await send(bot, "/fix acme  trading")
+    assert "Какую поправить" in bot.session.texts()[-1] and "SOUTHLINK" not in bot.session.texts()[-1]
+    button = bot.session.calls[-1].reply_markup.inline_keyboard[0][0]
+    await press(bot, Act.unpack(button.callback_data))
+    markups = [c for c in bot.session.calls if type(c).__name__ == "EditMessageReplyMarkup"]
+    grid = [b.text for row in markups[-1].reply_markup.inline_keyboard for b in row]
+    assert health.label in grid
+
+    await press(bot, Act(a="cat", t=txn.id, x=health.id))
+    await session.refresh(txn)
+    assert txn.category.code == "health" and txn.kind == "expense"
+
+    await send(bot, "/fix nothing-like-this")
+    assert "Не нашёл" in bot.session.texts()[-1]
+
+
+async def test_fix_against_a_saved_rule_offers_to_move_it(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(today(), Decimal("-100"), "SALE DEBIT SB294-SOUTHLINK BA * KUALA LUMPUR, MY")]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("SB294")))
+    fun, transport = await ledger.get_category(session, "fun"), await ledger.get_category(session, "transport")
+    await press(bot, Act(a="cat", t=txn.id, x=fun.id, m=1))  # remembered SOUTHLINK → fun
+    await press(bot, Act(a="cat", t=txn.id, x=transport.id))
+    edits = [c for c in bot.session.calls if type(c).__name__ == "EditMessageText"]
+    move = edits[-1].reply_markup.inline_keyboard[0][0]
+    assert move.text.startswith("📌 Всегда так")
+    await press(bot, Act.unpack(move.callback_data))
+    rule = (await ledger.user_rules(session))[0]
+    await session.refresh(rule)
+    assert rule.category_id == transport.id
+
+
+async def test_snoozed_rows_come_back_on_request(bot, session):
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(today(), Decimal("-200"), "DUITNOW TRANSFER TO ALI")]),
+        origin="test",
+    )
+    txn = await session.scalar(select(Transaction).where(Transaction.description.contains("ALI")))
+    await press(bot, Act(a="skip", t=txn.id, m=1))
+    assert "Отложенных 1" in bot.session.texts()[-1]
+    button = bot.session.calls[-1].reply_markup.inline_keyboard[0][0]
+    assert button.text == "⏪ Разобрать отложенные (1)"
+
+    await press(bot, Act.unpack(button.callback_data))
+    assert "Перевод человеку" in bot.session.texts()[-1] and "ALI" in bot.session.texts()[-1]
+    assert await ledger.snoozed_count(session) == 0

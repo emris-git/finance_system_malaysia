@@ -162,6 +162,44 @@ async def add_plan(
     return item
 
 
+PLAN_FIELDS = ("title", "amount", "due_on", "kind", "category", "repeat_months", "until", "note")
+
+
+async def update_plan(session: AsyncSession, item_id: int, changes: dict) -> PlannedItem:
+    """Edit a plan item. `changes` holds only the fields to change; `amount` is positive and its
+    sign follows the kind, `category`/`repeat_months`/`until`/`note` set to None clear the field."""
+    item = await session.get(PlannedItem, item_id)
+    if item is None:
+        raise LedgerError("такого пункта плана нет")
+    unknown = set(changes) - set(PLAN_FIELDS)
+    if unknown:
+        raise LedgerError(f"нельзя менять: {', '.join(sorted(unknown))}")
+    kind = changes.get("kind", item.kind)
+    if kind not in (EXPENSE, TRANSFER, INCOME):
+        raise LedgerError(f"неизвестный вид: {kind}")
+    size = abs(changes["amount"]) if "amount" in changes else abs(item.amount)
+    if not size:
+        raise LedgerError("сумма не может быть нулевой")
+    repeat = changes.get("repeat_months", item.repeat_months)
+    if repeat is not None and repeat < 1:
+        raise LedgerError("повтор — раз в месяц или реже")
+    if "category" in changes:
+        category = await get_category(session, changes["category"]) if changes["category"] else None
+        item.category_id = category.id if category else None
+    if "title" in changes:
+        item.title = (changes["title"] or "").strip()[:200] or "без названия"
+    if "due_on" in changes:
+        item.due_on = changes["due_on"]
+    for field in ("repeat_months", "until", "note"):
+        if field in changes:
+            setattr(item, field, changes[field])
+    item.kind = kind
+    item.amount = (size if kind == INCOME else -size).quantize(CENT)
+    await session.commit()
+    await session.refresh(item, ["category"])
+    return item
+
+
 async def close_plan(session: AsyncSession, item_id: int, status: str) -> PlannedItem:
     if status not in (PLAN_DONE, PLAN_CANCELLED, PLAN_OPEN):
         raise LedgerError(f"неизвестный статус: {status}")

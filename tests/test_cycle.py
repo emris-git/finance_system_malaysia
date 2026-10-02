@@ -73,6 +73,41 @@ async def test_monthly_series_groups_by_financial_month(session):
     assert current["expense"] == Decimal("10") and prev["expense"] == Decimal("5")
 
 
+async def test_monthly_series_converts_rub_expenses_at_monthly_rate(session):
+    start, _ = cycle_bounds(today())
+    prev_start, prev_end = cycle_bounds(start - timedelta(days=1))
+    # previous month: 100 RM -> 2000 RUB (20); current month has no RF transfer, so it reuses that rate
+    await ledger.record_fx(session, Decimal("100"), Decimal("2000"), day=prev_start)
+    await ledger.add_manual(session, "ru", Decimal("-400"), "кофе", day=prev_end, category_code="food_out")
+    await ledger.add_manual(session, "ru", Decimal("-200"), "кофе", day=start, category_code="food_out")
+    *_, prev, current = await reports.monthly_series(session, "MYR", months=3)
+    assert prev["expense"] == Decimal("20") and prev["rub_rate"] == Decimal("20")
+    assert current["expense"] == Decimal("10")
+    # the RUB-only view stays in rubles
+    *_, rub_current = await reports.monthly_series(session, "RUB", months=3)
+    assert rub_current["expense"] == Decimal("200")
+
+
+async def test_cycle_comparison_cuts_previous_cycles_at_the_same_day(session):
+    start, _ = cycle_bounds(today())
+    day = start + timedelta(days=2)
+    p1_start, _ = cycle_bounds(start - timedelta(days=1))
+    p2_start, _ = cycle_bounds(p1_start - timedelta(days=1))
+    await ledger.import_statement(
+        session,
+        mb(
+            (start, "-10", "GRAB FOOD"),
+            (p1_start + timedelta(days=1), "-30", "GRAB FOOD"),  # inside the cut
+            (p1_start + timedelta(days=5), "-500", "GRAB FOOD"),  # after the cut: ignored
+            (p2_start + timedelta(days=2), "-60", "GRAB FOOD"),
+        ),
+        origin="t",
+    )
+    result = await reports.cycle_comparison(session, day)
+    (line,) = result["categories"]
+    assert line["amount"] == Decimal("10") and line["baseline"] == Decimal("30")  # (30 + 60 + 0) / 3
+
+
 async def test_cli_event_from_stdin(session, capsys, monkeypatch):
     # what the Shortcut pipes in: a Dictionary arrives as JSON; the apostrophe never touches the shell
     payload = json.dumps({"amount": "12,50 RM", "merchant": "McDonald's KLCC", "card": "Maybank Visa"})

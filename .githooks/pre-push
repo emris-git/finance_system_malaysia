@@ -1,0 +1,6 @@
+#!/bin/sh
+# Blocks a push that adds personal data or secrets. Enable: scripts/install-hooks.sh
+root=$(git rev-parse --show-toplevel)
+base=origin/master; git rev-parse --verify -q "$base" >/dev/null || base=origin/main
+git rev-parse --verify -q "$base" >/dev/null || exit 0
+exec python3 "$root/scripts/privacy_check.py" --base "$base"

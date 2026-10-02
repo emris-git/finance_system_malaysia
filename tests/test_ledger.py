@@ -115,6 +115,29 @@ async def test_rf_typed_in_bot_is_confirmed_by_statement(session):
     assert "ALI BIN ABU" in pending.description
 
 
+async def test_rf_with_date_links_statement_row_already_imported(session):
+    day = today() - timedelta(days=40)
+    await ledger.import_statement(
+        session, maybank((day, "-2000.00", "DUITNOW TRANSFER TO STEPAN V")), origin="test", file_bytes=b"old"
+    )
+    posted = await txn_by_desc(session, "DUITNOW TRANSFER")
+    transfer = await ledger.record_fx(session, D("2000"), D("39373.6"), "maybank", day + timedelta(days=1))
+    await session.refresh(posted)
+    assert posted.transfer_id == transfer.id and posted.status == POSTED
+    assert transfer.rate == D("19.686800")
+    assert await session.scalar(select(Transaction).where(Transaction.status == PENDING)) is None
+
+
+async def test_rf_duplicate_is_found(session):
+    day = today() - timedelta(days=40)
+    assert await ledger.find_fx_duplicate(session, D("2000"), "maybank", day) is None
+    await ledger.record_fx(session, D("2000"), D("39373.6"), "maybank", day)
+    out, rub = await ledger.find_fx_duplicate(session, D("2000"), "maybank", day + timedelta(days=2))
+    assert (out.amount, rub.amount) == (D("-2000"), D("39373.6"))
+    assert await ledger.find_fx_duplicate(session, D("2000"), "maybank", day + timedelta(days=20)) is None
+    assert await ledger.find_fx_duplicate(session, D("1500"), "maybank", day) is None
+
+
 async def test_rf_merge_when_amount_differs_by_fee(session):
     day = today() - timedelta(days=2)
     await ledger.record_fx(session, D("500"), D("10750"), "maybank", day)
@@ -438,3 +461,42 @@ async def test_rubles_handed_over_paid_back_in_ringgit(session):
     await session.commit()
     balances = {name: amount for name, _, amount, _ in await reports.balances(session)}
     assert "Российский счёт" not in balances  # the ruble leg the bot wrote is gone with the link
+
+
+async def test_rm_links_imported_row_without_amount(session):
+    day = today() - timedelta(days=40)
+    await ledger.import_statement(
+        session, maybank((day, "3100.00", "IBK FUND TFR FR A/C ALEXANDER P")), origin="test", file_bytes=b"in"
+    )
+    posted = await txn_by_desc(session, "IBK FUND TFR")
+    transfer = await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+    await session.refresh(posted)
+    assert transfer.kind == "fx_back" and posted.transfer_id == transfer.id
+    out, back = await ledger.find_fx_back_duplicate(session, D("59259.9"), day + timedelta(days=1))
+    assert (out.amount, back.amount) == (D("-59259.9"), D("3100"))
+
+
+async def test_rm_without_amount_asks_when_unclear(session):
+    day = today() - timedelta(days=40)
+    with pytest.raises(ledger.LedgerError, match="не нашёл"):
+        await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+    await ledger.import_statement(
+        session,
+        maybank((day, "3100.00", "IBK FUND TFR A"), (day + timedelta(days=1), "3000.00", "IBK FUND TFR B")),
+        origin="test", file_bytes=b"two",
+    )
+    with pytest.raises(ledger.LedgerError, match="несколько"):
+        await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+
+
+async def test_rm_with_amount_is_pending_and_statement_confirms(session):
+    day = today() - timedelta(days=2)
+    transfer = await ledger.record_fx_back(session, D("59259.9"), D("3100"), "maybank", day)
+    pending = await session.scalar(select(Transaction).where(Transaction.status == PENDING))
+    assert pending.transfer_id == transfer.id and pending.amount == D("3100")
+    r = await ledger.import_statement(
+        session, maybank((day, "3100.00", "IBK FUND TFR FR A/C ALEXANDER P")), origin="test", file_bytes=b"later"
+    )
+    assert (r.new, r.reconciled) == (0, 1)
+    await session.refresh(pending)
+    assert pending.status == POSTED and pending.transfer_id == transfer.id

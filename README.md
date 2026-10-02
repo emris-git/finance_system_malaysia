@@ -12,7 +12,7 @@ It is **single-user**: everyone deploys their own copy. Your statements stay in 
 statements ──► parsers ──► ledger (Postgres) ──► reports ──► Telegram bot / weekly & monthly messages
   PDF/CSV from          dedup, rules,              │
   bot / API            transfers, pots           └──► dashboard (/)
-Apple Pay events ──► pending rows, confirmed by the statement later
+Apple Pay events, payment screenshots ──► pending rows, confirmed by the statement later
 ```
 
 ## What it does
@@ -23,7 +23,9 @@ Apple Pay events ──► pending rows, confirmed by the statement later
   - Maybank → TNG top-ups pair up automatically;
   - Maybank Tabung savings pots are tracked;
   - money sent to people waits for your decision in `/review`: a transfer to your Russian account (with the rate), your other account, or an expense.
-- **Rubles and cash**: type `1500₽ такси` or `25 rm обед` in the bot.
+- **Rubles and cash**: type `1500₽ такси` or `25 rm обед` in the bot, several entries at once (one per line). `/rm` records rubles exchanged for ringgit.
+- **Fixing categories**: `/fix <part of the description>` finds a row and lets you pick another category; the dashboard search covers every month and changes a category from the phone.
+- **Payment screenshots**: send a TNG / MAE screenshot to log the payment (needs `ANTHROPIC_API_KEY`).
 - **Reports**:
   - a weekly report every Monday;
   - a monthly report on the first day of your financial month, which can follow your payday;
@@ -156,6 +158,10 @@ finance job weekly|monthly [--force]      # the scheduled jobs, e.g. for a Railw
 echo '{"amount": "RM12.50", "merchant": "ZUS"}' | finance event --stdin   # a card payment from the phone
 ```
 
+### Payment screenshots
+
+A TNG or Maybank MAE payment screenshot sent to the bot (as a photo or an image file) is read by Claude (`ANTHROPIC_API_KEY`, model `SCREENSHOT_MODEL`, default `claude-sonnet-5-5`): amount, receiver, remark, date and time. It becomes a pending expense on that account, confirmed by the statement later like an Apple Pay row (the remark goes to the note). A known merchant gets its category from the rules; otherwise the bot asks right away: a shop is remembered, a transfer to a person only on request ("📌 Всегда так"). A payment the ledger already has (same account and amount, ±1 day, time within 10 min when both know it) is not added twice: the bot shows that row, asks its category if it still needs one, and offers "➕ Нет, это другой платёж". Incoming money, other currencies and transfers to the owner's own name are not recorded; for another app the bot asks which account paid.
+
 ## HTTP API
 
 Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. Machines: `Authorization: Bearer $API_TOKEN`.
@@ -187,3 +193,11 @@ Browser: `/web` in the bot gives a 15-minute link, which sets a 30-day cookie. M
 ## License
 
 [MIT](LICENSE)
+
+## Contributing: privacy gate
+
+This repo is public, so every change is scanned for personal data and secrets (`scripts/privacy_check.py`): bot tokens, API keys, e-mails, deployed domains, home paths, account-like numbers, statements, and personal words kept only as SHA-256 hashes.
+
+- CI: `.github/workflows/privacy.yml` runs on every PR and push; mark the `privacy` and `pytest` checks as required in branch protection so nothing merges red. Optional repo secret `PRIVACY_DENYLIST` holds the word hashes.
+- Local: `scripts/install-hooks.sh` enables pre-commit and pre-push hooks. Claude Code sessions get the same check through `.claude/settings.json` before a push, PR or merge.
+- Add a name: `python3 scripts/privacy_check.py --hash "First Last" >> .privacy-denylist`.

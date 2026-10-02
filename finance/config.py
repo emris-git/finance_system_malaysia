@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # How many salary cycles the forecast covers, the current one included
     BUDGET_HORIZON: int = Field(6, ge=1, le=24)
 
+    # Payment screenshots sent to the bot are read by Claude; without a key the bot says so.
+    ANTHROPIC_API_KEY: str | None = None
+    SCREENSHOT_MODEL: str = "claude-sonnet-5-5"
+
     SCHEDULER_ENABLED: bool = False
 
     # First day of the "financial month". Salary lands on the 25th, so a month

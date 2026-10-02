@@ -9,3 +9,6 @@ __pycache__/
 *.csv
 !tests/fixtures/*.csv
 .railway/node_modules/
+
+# personal word hashes for scripts/privacy_check.py (local only)
+.privacy-denylist

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Same check on the staged changes. Enable: scripts/install-hooks.sh
+exec python3 "$(git rev-parse --show-toplevel)/scripts/privacy_check.py" --staged

@@ -629,6 +629,106 @@ async def pay_back_rubles(
     return transfer
 
 
+async def find_fx_back_duplicate(
+    session: AsyncSession, rub_amount: Decimal, day: date | None = None
+) -> tuple[Transaction, Transaction | None] | None:
+    """A ruble-for-ringgit exchange of the same ruble amount near `day` that is already recorded:
+    (its ruble leg, its ringgit leg)."""
+    ru = await get_account(session, "ru")
+    day = day or today()
+    out = await session.scalar(
+        select(Transaction)
+        .join(Transfer, Transfer.id == Transaction.transfer_id)
+        .where(
+            Transfer.kind == "fx_back",
+            Transaction.account_id == ru.id,
+            Transaction.amount == -abs(rub_amount),
+            Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+            _not_deleted(),
+        )
+        .order_by(Transaction.booked_on.desc())
+        .limit(1)
+    )
+    if out is None:
+        return None
+    legs = await transfer_legs(session, out.transfer_id)
+    return out, next((leg for leg in legs if leg.amount > 0), None)
+
+
+FX_BACK_SEARCH = timedelta(days=5)
+FX_BACK_RATES = (Decimal("10"), Decimal("40"))  # ruble per ringgit that can be an exchange
+
+
+async def record_fx_back(
+    session: AsyncSession,
+    rub_amount: Decimal,
+    myr_amount: Decimal | None,
+    to_account: str = "maybank",
+    day: date | None = None,
+    note: str | None = None,
+) -> Transfer:
+    """Rubles exchanged for ringgit, typed into the bot (the reverse of /rf).
+
+    The ringgit leg is the statement row already imported near `day` (the one with
+    `myr_amount`, or, without it, the only incoming row with a plausible rate); with no
+    row yet it is pending and the statement confirms it.
+    """
+    if rub_amount <= 0:
+        raise LedgerError("сумма в рублях должна быть положительной")
+    account = await get_account(session, to_account)
+    when = day or today()
+    rows = list(
+        (
+            await session.scalars(
+                select(Transaction).where(
+                    Transaction.account_id == account.id,
+                    Transaction.amount > 0,
+                    Transaction.status == POSTED,
+                    Transaction.transfer_id.is_(None),
+                    Transaction.booked_on.between(when - FX_BACK_SEARCH, when + FX_BACK_SEARCH),
+                    _not_deleted(),
+                )
+            )
+        ).unique()
+    )
+    if myr_amount is None:
+        low, high = FX_BACK_RATES
+        rows = [r for r in rows if low <= rub_amount / r.amount <= high]
+        if not rows:
+            raise LedgerError(
+                f"В выписке не нашёл поступления ринггитов около {when:%d.%m}. Напиши, сколько RM пришло: "
+                f"/rm {rub_amount.normalize():f} 3100"
+            )
+        if len(rows) > 1:
+            options = ", ".join(f"RM {r.amount:,.2f} ({r.booked_on:%d.%m})" for r in sorted(rows, key=lambda r: r.booked_on))
+            raise LedgerError(f"Подходит несколько поступлений: {options}. Напиши, какое: /rm {rub_amount.normalize():f} сумма_RM")
+        await session.refresh(rows[0], ["account"])
+        return await pay_back_rubles(session, rows[0], rub_amount, note)
+    found = min(
+        (r for r in rows if r.amount == myr_amount and abs((r.booked_on - when).days) <= TRANSFER_WINDOW.days),
+        key=lambda r: abs((r.booked_on - when).days),
+        default=None,
+    )
+    if found is not None:
+        await session.refresh(found, ["account"])
+        return await pay_back_rubles(session, found, rub_amount, note)
+    pending = Transaction(
+        account_id=account.id,
+        booked_on=when,
+        amount=abs(myr_amount),
+        description="Ринггиты за рубли (ждёт выписку)",
+        merchant="ВОЗВРАТ РИНГГИТАМИ",
+        kind=TRANSFER,
+        status=PENDING,
+        source="manual",
+        note=note,
+    )
+    session.add(pending)
+    await session.flush()
+    await session.refresh(pending, ["account"])
+    return await pay_back_rubles(session, pending, rub_amount, note)
+
+
 # --- crypto ------------------------------------------------------------------
 
 CRYPTO_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
@@ -681,6 +781,33 @@ async def mark_crypto(
     return await _exchange(session, "crypto", out, wallet, amount, "КРИПТО", note)
 
 
+async def find_fx_duplicate(
+    session: AsyncSession, myr_amount: Decimal, from_account: str = "maybank", day: date | None = None
+) -> tuple[Transaction, Transaction | None] | None:
+    """An RF transfer of the same ringgit amount near `day` that is already recorded:
+    (its MYR leg, its ruble leg)."""
+    account = await get_account(session, from_account)
+    day = day or today()
+    out = await session.scalar(
+        select(Transaction)
+        .join(Transfer, Transfer.id == Transaction.transfer_id)
+        .where(
+            Transfer.kind == "fx",
+            Transaction.account_id == account.id,
+            Transaction.amount == -abs(myr_amount),
+            Transaction.status != REVERSED,
+            Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+            _not_deleted(),
+        )
+        .order_by(Transaction.booked_on.desc())
+        .limit(1)
+    )
+    if out is None:
+        return None
+    legs = await transfer_legs(session, out.transfer_id)
+    return out, next((leg for leg in legs if leg.amount > 0), None)
+
+
 async def record_fx(
     session: AsyncSession,
     myr_amount: Decimal,
@@ -689,11 +816,29 @@ async def record_fx(
     day: date | None = None,
     note: str | None = None,
 ) -> Transfer:
-    """RF transfer typed into the bot before the bank statement arrives.
+    """RF transfer typed into the bot, before the bank statement arrives or after it.
 
-    The MYR leg is pending; the statement row with the same amount confirms it.
+    A statement row already imported with that amount near `day` is the MYR leg;
+    otherwise the leg is pending and the statement row with the same amount confirms it.
     """
     account = await get_account(session, from_account)
+    if day is not None:
+        posted = await session.scalars(
+            select(Transaction)
+            .where(
+                Transaction.account_id == account.id,
+                Transaction.amount == -abs(myr_amount),
+                Transaction.status == POSTED,
+                Transaction.transfer_id.is_(None),
+                Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+                _not_deleted(),
+            )
+            .order_by(Transaction.booked_on)
+        )
+        found = min(posted.unique(), key=lambda t: abs((t.booked_on - day).days), default=None)
+        if found is not None:
+            await session.refresh(found, ["account"])
+            return await mark_fx(session, found, rub_amount, note)
     out = Transaction(
         account_id=account.id,
         booked_on=day or today(),
@@ -860,6 +1005,33 @@ async def user_rules(session: AsyncSession, limit: int = 15) -> list[CategoryRul
     )
 
 
+async def user_rule_for(session: AsyncSession, txn: Transaction) -> CategoryRule | None:
+    """The bot's own rule for this row's merchant, if one was saved."""
+    return await session.scalar(
+        select(CategoryRule).where(
+            CategoryRule.pattern == suggest_pattern(txn.description), CategoryRule.origin == "user"
+        )
+    )
+
+
+async def find_transactions(session: AsyncSession, text: str = "", limit: int = 8) -> list[Transaction]:
+    """/fix: the latest categorized rows whose description has the text (all words, any order).
+    Transfers are left out: they have their own flows in /review."""
+    conditions = [Transaction.kind != TRANSFER, Transaction.status != REVERSED, _not_deleted()]
+    for word in text.split():
+        conditions.append(Transaction.description.icontains(word, autoescape=True))
+    return list(
+        (
+            await session.scalars(
+                select(Transaction)
+                .where(*conditions)
+                .order_by(Transaction.booked_on.desc(), Transaction.id.desc())
+                .limit(limit)
+            )
+        ).unique()
+    )
+
+
 async def delete_user_rule(session: AsyncSession, rule_id: int) -> CategoryRule | None:
     """Rows the rule already categorized keep their category."""
     rule = await session.get(CategoryRule, rule_id)
@@ -893,9 +1065,11 @@ async def add_manual(
     status: str = POSTED,
     source: str = "manual",
     review: bool = False,
+    booked_at: datetime | None = None,
+    note: str | None = None,
 ) -> Transaction:
     """Entry typed by a person (review=False: they see the category right away)
-    or pushed by a device, e.g. an Apple Pay automation (review=True)."""
+    or pushed by a device, e.g. an Apple Pay automation or a payment screenshot (review=True)."""
     account = await get_account(session, account_code)
     classifier = await Classifier.load(session)
     c = classifier.classify(description, amount, account.code, category_hint=category_code)
@@ -908,6 +1082,7 @@ async def add_manual(
     txn = Transaction(
         account_id=account.id,
         booked_on=day or today(),
+        booked_at=booked_at,
         amount=amount,
         description=description,
         merchant=merchant_of(description),
@@ -915,6 +1090,7 @@ async def add_manual(
         category_id=category_id,
         status=status,
         source=source,
+        note=note,
         review_reason=REVIEW_UNCATEGORIZED if review and c.review_reason == REVIEW_UNCATEGORIZED else None,
     )
     if txn.category_id is None:
@@ -924,6 +1100,37 @@ async def add_manual(
     await session.commit()
     await session.refresh(txn, ["account", "category"])
     return txn
+
+
+SAME_PAYMENT_WITHIN = timedelta(minutes=10)
+
+
+async def find_recorded(
+    session: AsyncSession, account_code: str, amount: Decimal, day: date, at: datetime | None = None
+) -> Transaction | None:
+    """A row already holding this payment: the statement came first, or the same
+    screenshot was sent twice. Same account and amount, a day either way; when
+    both sides know the time, it must agree too (two coffees on one day)."""
+    account = await get_account(session, account_code)
+    rows = (
+        await session.scalars(
+            select(Transaction).where(
+                Transaction.account_id == account.id,
+                Transaction.amount == amount,
+                Transaction.booked_on.between(day - timedelta(days=1), day + timedelta(days=1)),
+                Transaction.status != REVERSED,
+                _not_deleted(),
+            )
+        )
+    ).unique().all()
+    if at is not None:
+        naive = at.replace(tzinfo=None)
+        rows = [
+            r for r in rows
+            if r.booked_at is None
+            or abs(r.booked_at.astimezone(get_settings().tz).replace(tzinfo=None) - naive) <= SAME_PAYMENT_WITHIN
+        ]
+    return min(rows, key=lambda t: abs((t.booked_on - day).days), default=None)
 
 
 def account_for_card(card: str | None, default: str = "maybank") -> str:
@@ -1021,6 +1228,17 @@ async def snooze(session: AsyncSession, txn: Transaction, days: int = SNOOZE_DAY
     """"Пропустить": out of the queue for a week, then asked again."""
     txn.review_snoozed_until = today() + timedelta(days=days)
     await session.commit()
+
+
+async def unsnooze_all(session: AsyncSession) -> int:
+    """"Разобрать отложенные": skipped rows come back to the queue now, not in a week."""
+    rows = (
+        await session.scalars(select(Transaction).where(_needs_answer(), Transaction.review_snoozed_until > today()))
+    ).unique().all()
+    for row in rows:
+        row.review_snoozed_until = None
+    await session.commit()
+    return len(rows)
 
 
 async def review_queue(session: AsyncSession, limit: int = 20) -> list[Transaction]:

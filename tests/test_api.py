@@ -10,7 +10,7 @@ from aiogram import Bot
 import finance.bot as bot_module
 import finance.web.app as app_module
 from finance.config import get_settings
-from finance.quick_entry import parse_entry, parse_rf_command
+from finance.quick_entry import parse_entry, parse_rf_command, parse_rm_command
 from finance.utils import today
 from finance.web.app import app
 from finance.web.auth import magic_link
@@ -123,6 +123,7 @@ async def test_mark_fx_via_api(client):
 
 
 def test_quick_entry():
+    assert parse_entry("1500 rub такси").amount == -1500 and parse_entry("1500 rub такси").currency == "RUB"
     e = parse_entry("1 500₽ такси вчера")
     assert (e.amount, e.currency, e.description, e.day) == (-1500, "RUB", "такси", today() - timedelta(days=1))
     e = parse_entry("25.5 rm обед")
@@ -143,8 +144,14 @@ def test_quick_entry():
     assert (parse_entry("+5 USDT кэшбэк", coins).amount, parse_entry("usdt 15 кофе", coins).currency) == (5, "USDT")
     assert parse_entry("15 coffee", coins).currency == "RUB"  # not a known coin
     assert parse_entry("15 usdt", coins) is None  # no description, like "1500₽"
-    assert parse_rf_command("1000 21500 tng") == (1000, 21500, "tng")
+    assert parse_rf_command("1000 21500 tng") == (1000, 21500, "tng", None)
+    assert parse_rf_command("2000 39373,6 tng 02.03") == (2000, Decimal("39373.6"), "tng", date(today().year, 3, 2))
     assert parse_rf_command("1000") is None
+    assert parse_rm_command("59259,9") == (Decimal("59259.9"), None, "maybank", None)
+    assert parse_rm_command("59259.9 3100") == (Decimal("59259.9"), Decimal("3100"), "maybank", None)
+    assert parse_rm_command("59259.9 12.02") == (Decimal("59259.9"), None, "maybank", date(today().year, 2, 12))
+    assert parse_rm_command("59259.9 3100 tng 12.02") == (Decimal("59259.9"), Decimal("3100"), "tng", date(today().year, 2, 12))
+    assert parse_rm_command("") is None
 
 
 async def test_no_secret_key_disables_login(client, monkeypatch):
@@ -177,3 +184,26 @@ async def test_unknown_apple_pay_merchant_asks_for_category(client, monkeypatch)
     assert "какая категория" in text and "MYSTERY KIOSK" in text
     buttons = [row[0].text for row in markup.inline_keyboard]
     assert "🚕 Транспорт" in buttons
+
+
+async def test_search_finds_a_row_from_any_month_to_fix(client, session):
+    from finance import ledger
+    from finance.parsers import ParsedStatement, ParsedTxn
+
+    old = today() - timedelta(days=260)
+    await ledger.import_statement(
+        session,
+        ParsedStatement("maybank", "maybank_csv",
+                        [ParsedTxn(old, Decimal("-1488.60"), "TRANSFER FROM A/C ACME TRADING SDN. BHD.* Morgan Ale")]),
+        origin="test",
+    )
+    in_month = (await client.get("/api/transactions?q=ACME", headers=TOKEN)).json()
+    assert in_month["total"] == 0  # the default period is this month
+    (txn,) = (await client.get("/api/transactions?q=acme&anytime=true", headers=TOKEN)).json()["items"]
+    r = await client.patch(f"/api/transactions/{txn['id']}", headers=TOKEN, json={"category": "health"})
+    assert r.json()["category"] == "health" and r.json()["kind"] == "expense"
+
+
+async def test_cycle_compare_endpoint(client):
+    r = await client.get("/api/cycle-compare", headers=TOKEN)
+    assert r.status_code == 200 and r.json()["cycles"] == 3
