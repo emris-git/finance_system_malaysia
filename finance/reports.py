@@ -232,6 +232,37 @@ async def summarize(
     return summary
 
 
+async def cycle_comparison(session: AsyncSession, day: date, cycles: int = 3) -> dict:
+    """Spending of the cycle containing `day`, up to `day`, against the same stretch of the previous cycles.
+
+    The baseline is the per-category average over `cycles` earlier cycles, each cut at the same number of
+    days from its start (a cycle that is shorter is taken whole).
+    """
+    start, _ = cycle_bounds(day)
+    elapsed = (day - start).days
+    current = await _category_totals(session, start, day, EXPENSE)
+    baseline: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
+    cursor = start
+    for _ in range(cycles):
+        p_start, p_end = cycle_bounds(cursor - timedelta(days=1))
+        cursor = p_start
+        for key, amount in (await _category_totals(session, p_start, min(p_end, p_start + timedelta(days=elapsed)), EXPENSE)).items():
+            baseline[key] += amount / cycles
+    categories = {c.code: c for c in (await session.scalars(select(Category))).all()}
+    lines = [
+        {
+            "code": code,
+            "label": categories[code].label if code in categories else code,
+            "amount": current.get(("MYR", code), ZERO),
+            "baseline": baseline.get(("MYR", code), ZERO),
+        }
+        for code in {code for cur, code in [*current, *baseline] if cur == "MYR"}
+    ]
+    lines = [line for line in lines if line["amount"] or line["baseline"]]
+    lines.sort(key=lambda line: (line["amount"], line["baseline"]), reverse=True)
+    return {"start": start, "end": day, "cycles": cycles, "categories": lines}
+
+
 async def freshness(session: AsyncSession) -> list[Freshness]:
     rows = await session.execute(
         select(Account.name, func.max(Transaction.booked_on))

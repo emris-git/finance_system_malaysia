@@ -741,15 +741,26 @@ function applyPreset(preset) {
   $("#to").value = state.end;
 }
 
+function renderCycleCompare(c) {
+  const day = state.meta.month_start_day;
+  $("#cycle-hint").textContent = c.categories.length
+    ? `${fmtDay(c.start)} – ${fmtDay(c.end)} · черта — средние траты за те же дни от начала (${day}-го) трёх прошлых циклов`
+    : "";
+  barList($("#cycle-bars"), c.categories, "MYR", true);
+}
+
 async function refresh() {
   const sections = [$("#main"), $("#kpis")];
   sections.forEach((s) => s.classList.add("loading"));
   try {
     const q = `start=${state.start}&end=${state.end}`;
-    const [summary, daily] = await Promise.all([api(`/api/summary?${q}`), api(`/api/daily?${q}&currency=MYR`)]);
+    const [summary, daily, cycle] = await Promise.all([
+      api(`/api/summary?${q}`), api(`/api/daily?${q}&currency=MYR`), api(`/api/cycle-compare?end=${state.end}`),
+    ]);
     $("#range-label").textContent = `${fmtDay(state.start)} – ${fmtDay(state.end)}`;
     renderSummary(summary);
     renderDaily(daily);
+    renderCycleCompare(cycle);
     await Promise.all([loadTx(true), loadReview()]);
   } finally {
     sections.forEach((s) => s.classList.remove("loading"));

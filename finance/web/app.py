@@ -222,6 +222,11 @@ async def api_summary(session: DB, start: date | None = None, end: date | None =
     }
 
 
+@app.get("/api/cycle-compare", dependencies=[Depends(require_user)])
+async def api_cycle_compare(session: DB, end: date | None = None):
+    return await reports.cycle_comparison(session, min(end or today(), today()))
+
+
 @app.get("/api/monthly", dependencies=[Depends(require_user)])
 async def api_monthly(session: DB, currency: str = "MYR", months: int = Query(12, ge=1, le=36)):
     return await reports.monthly_series(session, currency, months)

@@ -202,3 +202,8 @@ async def test_search_finds_a_row_from_any_month_to_fix(client, session):
     (txn,) = (await client.get("/api/transactions?q=acme&anytime=true", headers=TOKEN)).json()["items"]
     r = await client.patch(f"/api/transactions/{txn['id']}", headers=TOKEN, json={"category": "health"})
     assert r.json()["category"] == "health" and r.json()["kind"] == "expense"
+
+
+async def test_cycle_compare_endpoint(client):
+    r = await client.get("/api/cycle-compare", headers=TOKEN)
+    assert r.status_code == 200 and r.json()["cycles"] == 3
