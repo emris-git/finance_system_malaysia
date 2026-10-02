@@ -26,7 +26,6 @@ Apple Pay events, payment screenshots ──► pending rows, confirmed by the s
 - **Rubles and cash**: type `1500₽ такси` or `25 rm обед` in the bot, several entries at once (one per line). `/rm` records rubles exchanged for ringgit.
 - **Fixing categories**: `/fix <part of the description>` finds a row and lets you pick another category; the dashboard search covers every month and changes a category from the phone.
 - **Payment screenshots**: send a TNG / MAE screenshot to log the payment (needs `ANTHROPIC_API_KEY`).
-
 - **Reports**:
   - a weekly report every Monday;
   - a monthly report on the first day of your financial month, which can follow your payday;
