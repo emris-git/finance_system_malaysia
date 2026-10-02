@@ -1,0 +1,2 @@
+owner e-mail: privacy.test.leak@gmail.com
+bot token: 123456789:AbCdEfGhIjKlMnOpQrStUvWxYz012345678
