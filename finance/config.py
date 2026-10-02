@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # Payment screenshots sent to the bot are read by Claude; without a key the bot says so.
     ANTHROPIC_API_KEY: str | None = None
-    SCREENSHOT_MODEL: str = "claude-opus-5"
+    SCREENSHOT_MODEL: str = "claude-sonnet-5-5"
 
     SCHEDULER_ENABLED: bool = False
 
