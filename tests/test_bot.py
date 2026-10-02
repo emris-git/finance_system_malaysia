@@ -150,6 +150,8 @@ async def test_review_category_is_remembered_with_undo(bot, session):
 async def test_rf_command_and_month(bot, session):
     await send(bot, "/rf 1000 21500")
     assert "подтвердится сам" in bot.session.texts()[-1]
+    await send(bot, "/rf 1000 21500")
+    assert "уже записан" in bot.session.texts()[-1]
     await send(bot, "/month")
     assert "На РФ" in bot.session.texts()[-1]
     await send(bot, "/web")

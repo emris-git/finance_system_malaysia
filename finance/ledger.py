@@ -681,6 +681,33 @@ async def mark_crypto(
     return await _exchange(session, "crypto", out, wallet, amount, "КРИПТО", note)
 
 
+async def find_fx_duplicate(
+    session: AsyncSession, myr_amount: Decimal, from_account: str = "maybank", day: date | None = None
+) -> tuple[Transaction, Transaction | None] | None:
+    """An RF transfer of the same ringgit amount near `day` that is already recorded:
+    (its MYR leg, its ruble leg)."""
+    account = await get_account(session, from_account)
+    day = day or today()
+    out = await session.scalar(
+        select(Transaction)
+        .join(Transfer, Transfer.id == Transaction.transfer_id)
+        .where(
+            Transfer.kind == "fx",
+            Transaction.account_id == account.id,
+            Transaction.amount == -abs(myr_amount),
+            Transaction.status != REVERSED,
+            Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+            _not_deleted(),
+        )
+        .order_by(Transaction.booked_on.desc())
+        .limit(1)
+    )
+    if out is None:
+        return None
+    legs = await transfer_legs(session, out.transfer_id)
+    return out, next((leg for leg in legs if leg.amount > 0), None)
+
+
 async def record_fx(
     session: AsyncSession,
     myr_amount: Decimal,

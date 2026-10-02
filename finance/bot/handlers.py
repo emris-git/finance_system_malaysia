@@ -293,6 +293,15 @@ async def cmd_rf(message: Message, session: AsyncSession, command: CommandObject
         )
         return
     myr, rub, account, day = parsed
+    duplicate = await ledger.find_fx_duplicate(session, myr, account, day)
+    if duplicate:
+        out, rub_leg = duplicate
+        got = f" → {fmt_money(rub_leg.amount, 'RUB')}" if rub_leg else ""
+        await message.answer(
+            f"🇷🇺 Такой перевод уже записан: {fmt_money(-out.amount)}{got}, {fmt_day(out.booked_on)}. Ничего не добавил.\n"
+            "Если это другой обмен на ту же сумму, укажи другую дату."
+        )
+        return
     transfer = await ledger.record_fx(session, myr, rub, account, day)
     if any(leg.status == PENDING for leg in await ledger.transfer_legs(session, transfer.id)):
         tail = f"Когда придёт выписка {'TNG' if account == 'tng' else 'Maybank'}, перевод подтвердится сам."

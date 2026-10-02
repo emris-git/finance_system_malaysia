@@ -128,6 +128,16 @@ async def test_rf_with_date_links_statement_row_already_imported(session):
     assert await session.scalar(select(Transaction).where(Transaction.status == PENDING)) is None
 
 
+async def test_rf_duplicate_is_found(session):
+    day = today() - timedelta(days=40)
+    assert await ledger.find_fx_duplicate(session, D("2000"), "maybank", day) is None
+    await ledger.record_fx(session, D("2000"), D("39373.6"), "maybank", day)
+    out, rub = await ledger.find_fx_duplicate(session, D("2000"), "maybank", day + timedelta(days=2))
+    assert (out.amount, rub.amount) == (D("-2000"), D("39373.6"))
+    assert await ledger.find_fx_duplicate(session, D("2000"), "maybank", day + timedelta(days=20)) is None
+    assert await ledger.find_fx_duplicate(session, D("1500"), "maybank", day) is None
+
+
 async def test_rf_merge_when_amount_differs_by_fee(session):
     day = today() - timedelta(days=2)
     await ledger.record_fx(session, D("500"), D("10750"), "maybank", day)
