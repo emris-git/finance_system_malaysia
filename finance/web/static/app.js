@@ -585,17 +585,67 @@ async function loadBudget() {
   const list = $("#plan-list");
   list.textContent = "";
   if (!plans.length) list.append(el("div", { class: "empty", text: "Ничего не запланировано" }));
-  for (const p of plans) {
-    const setStatus = (status) => act(api(`/api/plans/${p.id}`, { method: "PATCH", body: JSON.stringify({ status }) }).then(loadBudget));
-    list.append(el("div", { class: "plan-item" },
+  for (const p of plans) list.append(planItem(p));
+}
+
+const REPEATS = { "": "не повторять", 1: "каждый месяц", 3: "раз в 3 мес.", 12: "каждый год" };
+
+function planItem(p) {
+  const setStatus = (status) => act(api(`/api/plans/${p.id}`, { method: "PATCH", body: JSON.stringify({ status }) }).then(loadBudget));
+  const row = el("div", { class: "plan-item" });
+  const show = () => {
+    row.textContent = "";
+    row.append(
       el("div", {},
         el("b", { class: num(p.amount) > 0 ? "amount-in" : "", text: fmtMoney(p.amount, "MYR", true) }), ` · ${p.title}`,
         el("div", { class: "meta", text: [planWhen(p), PLAN_KINDS[p.kind], p.category_label].filter(Boolean).join(" · ") })),
       el("div", { class: "actions" },
+        el("button", { class: "btn", text: "✏️", title: "Изменить", onclick: edit }),
         el("button", { class: "btn", text: "✅ Оплачено", onclick: () => setStatus("done") }),
-        el("button", { class: "btn", text: "✖️", title: "Не будет", onclick: () => setStatus("cancelled") })),
-    ));
-  }
+        el("button", { class: "btn", text: "✖️", title: "Не будет", onclick: () => setStatus("cancelled") })));
+  };
+  const edit = () => {
+    const title = el("input", { type: "text", value: p.title, "aria-label": "Что", required: true });
+    const amount = el("input", { type: "number", value: Math.abs(num(p.amount)), min: "0.01", step: "0.01", "aria-label": "Сумма, RM", required: true });
+    const due = el("input", { type: "date", value: String(p.due_on).slice(0, 10), "aria-label": "Когда", required: true });
+    const kind = el("select", { "aria-label": "Тип" },
+      el("option", { value: "expense", text: "трата" }), el("option", { value: "transfer", text: "перевод (РФ, копилка)" }),
+      el("option", { value: "income", text: "доход" }));
+    kind.value = p.kind;
+    const repeat = el("select", { "aria-label": "Повтор" });
+    const repeats = { ...REPEATS };
+    if (p.repeat_months && !(p.repeat_months in repeats)) repeats[p.repeat_months] = `раз в ${p.repeat_months} мес.`;
+    for (const [value, label] of Object.entries(repeats)) repeat.append(el("option", { value, text: label }));
+    repeat.value = p.repeat_months ?? "";
+    const category = el("select", { "aria-label": "Категория" });
+    const fillCategories = (selected) => {
+      category.textContent = "";
+      category.append(el("option", { value: "", text: "без категории" }));
+      for (const c of state.meta.categories.filter((x) => x.kind === (kind.value === "income" ? "income" : "expense"))) {
+        category.append(el("option", { value: c.code, text: c.label }));
+      }
+      category.value = selected ?? "";
+    };
+    fillCategories(p.category);
+    kind.addEventListener("change", () => fillCategories(null));
+    const form = el("form", { class: "plan-form plan-edit" }, title, amount, due, kind, category, repeat,
+      el("button", { class: "btn primary", type: "submit", text: "Сохранить" }),
+      el("button", { class: "btn", type: "button", text: "Отмена", onclick: show }));
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const body = {
+        title: title.value, amount: amount.value, due_on: due.value, kind: kind.value,
+        category: category.value || null, repeat_months: repeat.value ? Number(repeat.value) : null,
+      };
+      if (!body.repeat_months) body.until = null;
+      act(api(`/api/plans/${p.id}`, { method: "PATCH", body: JSON.stringify(body) }).then(loadBudget));
+    });
+    row.textContent = "";
+    row.append(form);
+    title.focus();
+  };
+  show();
+  return row;
 }
 
 function initPlanForm() {

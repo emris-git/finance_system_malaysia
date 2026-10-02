@@ -159,5 +159,7 @@ table.data .show-sm { display: none; }
 .plan-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
 .plan-form input[name="title"] { flex: 1 1 180px; }
 .plan-form input[name="amount"] { width: 110px; }
+.plan-edit { grid-column: 1 / -1; margin-top: 0; }
+.plan-edit input[type="number"] { width: 110px; }
 .meta { color: var(--muted); font-size: 12px; }
 .formula { margin: 0 0 10px; color: var(--ink-2); }

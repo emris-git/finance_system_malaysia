@@ -324,3 +324,24 @@ async def test_budget_api(client, session):  # noqa: F811
     assert r.json()["status"] == "cancelled"
     b = (await client.get("/api/budget")).json()
     assert len(b["cycles"]) == get_settings().BUDGET_HORIZON and "liquid_total" in b
+
+
+async def test_plan_edit_api(client, session):  # noqa: F811
+    await login(client)
+    r = await client.post("/api/plans", json={"title": "отель", "amount": "5674", "due_on": "2026-12-10", "category": "travel"})
+    plan_id = r.json()["id"]
+    r = await client.patch(f"/api/plans/{plan_id}", json={"title": "отель Вьетнам", "amount": "6000", "due_on": "2026-12-12"})
+    body = r.json()
+    assert (body["title"], body["amount"], body["due_on"], body["category"]) == ("отель Вьетнам", -6000, "2026-12-12", "travel")
+    # an unsent field stays; null clears; the sign follows the kind
+    r = await client.patch(f"/api/plans/{plan_id}", json={"category": None, "repeat_months": 1, "kind": "income"})
+    body = r.json()
+    assert (body["category"], body["repeat_months"], body["amount"], body["kind"]) == (None, 1, 6000, "income")
+    r = await client.patch(f"/api/plans/{plan_id}", json={"repeat_months": 0})
+    assert r.status_code == 400
+    r = await client.patch(f"/api/plans/{plan_id}", json={"amount": "0"})
+    assert r.status_code == 400
+    r = await client.patch("/api/plans/99999", json={"title": "x"})
+    assert r.status_code == 404
+    r = await client.patch(f"/api/plans/{plan_id}", json={"title": "новое имя", "status": "done"})
+    assert r.json()["status"] == "done" and r.json()["title"] == "новое имя"

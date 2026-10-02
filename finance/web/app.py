@@ -266,7 +266,17 @@ class PlanBody(BaseModel):
 
 
 class PlanPatch(BaseModel):
-    status: Literal["planned", "done", "cancelled"]
+    """Only the fields that are sent change; null clears category, repeat, until and note."""
+
+    status: Literal["planned", "done", "cancelled"] | None = None
+    title: str | None = None
+    amount: Decimal | None = None  # positive; the sign follows the kind
+    due_on: date | None = None
+    kind: Literal["expense", "transfer", "income"] | None = None
+    category: str | None = None
+    repeat_months: int | None = None
+    until: date | None = None
+    note: str | None = None
 
 
 @app.get("/api/plans", dependencies=[Depends(require_user)])
@@ -289,10 +299,19 @@ async def api_add_plan(body: PlanBody, session: DB):
 
 @app.patch("/api/plans/{item_id}", dependencies=[Depends(require_user)])
 async def api_patch_plan(item_id: int, body: PlanPatch, session: DB):
+    changes = body.model_dump(exclude_unset=True)
+    status = changes.pop("status", None)
+    for required in ("title", "amount", "due_on", "kind"):
+        if required in changes and changes[required] is None:
+            del changes[required]
     try:
-        item = await budget.close_plan(session, item_id, body.status)
+        item = await budget.update_plan(session, item_id, changes) if changes else await session.get(PlannedItem, item_id)
+        if item is None:
+            raise ledger.LedgerError("такого пункта плана нет")
+        if status:
+            item = await budget.close_plan(session, item_id, status)
     except ledger.LedgerError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(404 if "нет" in str(exc) else 400, str(exc)) from exc
     await session.refresh(item, ["category"])
     return _plan_json(item)
 
