@@ -461,3 +461,42 @@ async def test_rubles_handed_over_paid_back_in_ringgit(session):
     await session.commit()
     balances = {name: amount for name, _, amount, _ in await reports.balances(session)}
     assert "Российский счёт" not in balances  # the ruble leg the bot wrote is gone with the link
+
+
+async def test_rm_links_imported_row_without_amount(session):
+    day = today() - timedelta(days=40)
+    await ledger.import_statement(
+        session, maybank((day, "3100.00", "IBK FUND TFR FR A/C ALEXANDER P")), origin="test", file_bytes=b"in"
+    )
+    posted = await txn_by_desc(session, "IBK FUND TFR")
+    transfer = await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+    await session.refresh(posted)
+    assert transfer.kind == "fx_back" and posted.transfer_id == transfer.id
+    out, back = await ledger.find_fx_back_duplicate(session, D("59259.9"), day + timedelta(days=1))
+    assert (out.amount, back.amount) == (D("-59259.9"), D("3100"))
+
+
+async def test_rm_without_amount_asks_when_unclear(session):
+    day = today() - timedelta(days=40)
+    with pytest.raises(ledger.LedgerError, match="не нашёл"):
+        await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+    await ledger.import_statement(
+        session,
+        maybank((day, "3100.00", "IBK FUND TFR A"), (day + timedelta(days=1), "3000.00", "IBK FUND TFR B")),
+        origin="test", file_bytes=b"two",
+    )
+    with pytest.raises(ledger.LedgerError, match="несколько"):
+        await ledger.record_fx_back(session, D("59259.9"), None, "maybank", day)
+
+
+async def test_rm_with_amount_is_pending_and_statement_confirms(session):
+    day = today() - timedelta(days=2)
+    transfer = await ledger.record_fx_back(session, D("59259.9"), D("3100"), "maybank", day)
+    pending = await session.scalar(select(Transaction).where(Transaction.status == PENDING))
+    assert pending.transfer_id == transfer.id and pending.amount == D("3100")
+    r = await ledger.import_statement(
+        session, maybank((day, "3100.00", "IBK FUND TFR FR A/C ALEXANDER P")), origin="test", file_bytes=b"later"
+    )
+    assert (r.new, r.reconciled) == (0, 1)
+    await session.refresh(pending)
+    assert pending.status == POSTED and pending.transfer_id == transfer.id

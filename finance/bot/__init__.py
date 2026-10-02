@@ -17,6 +17,7 @@ COMMANDS = [
     BotCommand(command="month", description="Этот месяц (или /month 2026-08)"),
     BotCommand(command="review", description="Разобрать непонятные транзакции"),
     BotCommand(command="rf", description="Перевод на РФ: /rf 1000 21500 [24.09]"),
+    BotCommand(command="rm", description="Рубли на ринггиты: /rm 59259.9 3100 [12.02]"),
     BotCommand(command="balance", description="Остатки и курс"),
     BotCommand(command="budget", description="Бюджет на полгода вперёд"),
     BotCommand(command="plan", description="Будущие траты: /plan 1800 отель 25.10"),

@@ -629,6 +629,106 @@ async def pay_back_rubles(
     return transfer
 
 
+async def find_fx_back_duplicate(
+    session: AsyncSession, rub_amount: Decimal, day: date | None = None
+) -> tuple[Transaction, Transaction | None] | None:
+    """A ruble-for-ringgit exchange of the same ruble amount near `day` that is already recorded:
+    (its ruble leg, its ringgit leg)."""
+    ru = await get_account(session, "ru")
+    day = day or today()
+    out = await session.scalar(
+        select(Transaction)
+        .join(Transfer, Transfer.id == Transaction.transfer_id)
+        .where(
+            Transfer.kind == "fx_back",
+            Transaction.account_id == ru.id,
+            Transaction.amount == -abs(rub_amount),
+            Transaction.booked_on.between(day - TRANSFER_WINDOW, day + TRANSFER_WINDOW),
+            _not_deleted(),
+        )
+        .order_by(Transaction.booked_on.desc())
+        .limit(1)
+    )
+    if out is None:
+        return None
+    legs = await transfer_legs(session, out.transfer_id)
+    return out, next((leg for leg in legs if leg.amount > 0), None)
+
+
+FX_BACK_SEARCH = timedelta(days=5)
+FX_BACK_RATES = (Decimal("10"), Decimal("40"))  # ruble per ringgit that can be an exchange
+
+
+async def record_fx_back(
+    session: AsyncSession,
+    rub_amount: Decimal,
+    myr_amount: Decimal | None,
+    to_account: str = "maybank",
+    day: date | None = None,
+    note: str | None = None,
+) -> Transfer:
+    """Rubles exchanged for ringgit, typed into the bot (the reverse of /rf).
+
+    The ringgit leg is the statement row already imported near `day` (the one with
+    `myr_amount`, or, without it, the only incoming row with a plausible rate); with no
+    row yet it is pending and the statement confirms it.
+    """
+    if rub_amount <= 0:
+        raise LedgerError("сумма в рублях должна быть положительной")
+    account = await get_account(session, to_account)
+    when = day or today()
+    rows = list(
+        (
+            await session.scalars(
+                select(Transaction).where(
+                    Transaction.account_id == account.id,
+                    Transaction.amount > 0,
+                    Transaction.status == POSTED,
+                    Transaction.transfer_id.is_(None),
+                    Transaction.booked_on.between(when - FX_BACK_SEARCH, when + FX_BACK_SEARCH),
+                    _not_deleted(),
+                )
+            )
+        ).unique()
+    )
+    if myr_amount is None:
+        low, high = FX_BACK_RATES
+        rows = [r for r in rows if low <= rub_amount / r.amount <= high]
+        if not rows:
+            raise LedgerError(
+                f"В выписке не нашёл поступления ринггитов около {when:%d.%m}. Напиши, сколько RM пришло: "
+                f"/rm {rub_amount.normalize():f} 3100"
+            )
+        if len(rows) > 1:
+            options = ", ".join(f"RM {r.amount:,.2f} ({r.booked_on:%d.%m})" for r in sorted(rows, key=lambda r: r.booked_on))
+            raise LedgerError(f"Подходит несколько поступлений: {options}. Напиши, какое: /rm {rub_amount.normalize():f} сумма_RM")
+        await session.refresh(rows[0], ["account"])
+        return await pay_back_rubles(session, rows[0], rub_amount, note)
+    found = min(
+        (r for r in rows if r.amount == myr_amount and abs((r.booked_on - when).days) <= TRANSFER_WINDOW.days),
+        key=lambda r: abs((r.booked_on - when).days),
+        default=None,
+    )
+    if found is not None:
+        await session.refresh(found, ["account"])
+        return await pay_back_rubles(session, found, rub_amount, note)
+    pending = Transaction(
+        account_id=account.id,
+        booked_on=when,
+        amount=abs(myr_amount),
+        description="Ринггиты за рубли (ждёт выписку)",
+        merchant="ВОЗВРАТ РИНГГИТАМИ",
+        kind=TRANSFER,
+        status=PENDING,
+        source="manual",
+        note=note,
+    )
+    session.add(pending)
+    await session.flush()
+    await session.refresh(pending, ["account"])
+    return await pay_back_rubles(session, pending, rub_amount, note)
+
+
 # --- crypto ------------------------------------------------------------------
 
 CRYPTO_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")

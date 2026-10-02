@@ -158,6 +158,15 @@ async def test_rf_command_and_month(bot, session):
     assert "auth/magic" in bot.session.texts()[-1]
 
 
+async def test_rm_command_and_duplicate(bot, session):
+    await send(bot, "/rm 59259.9 3100 12.02")
+    assert "подтвердится само" in bot.session.texts()[-1]
+    await send(bot, "/rm 59259.9 3100 12.02")
+    assert "уже записан" in bot.session.texts()[-1]
+    await send(bot, "/rm 1000")
+    assert "не нашёл" in bot.session.texts()[-1]
+
+
 async def test_skip_does_not_come_back_and_own_offers_pots(bot, session):
     day = today() - timedelta(days=30)
     await ledger.import_statement(

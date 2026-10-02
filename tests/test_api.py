@@ -10,7 +10,7 @@ from aiogram import Bot
 import finance.bot as bot_module
 import finance.web.app as app_module
 from finance.config import get_settings
-from finance.quick_entry import parse_entry, parse_rf_command
+from finance.quick_entry import parse_entry, parse_rf_command, parse_rm_command
 from finance.utils import today
 from finance.web.app import app
 from finance.web.auth import magic_link
@@ -147,6 +147,11 @@ def test_quick_entry():
     assert parse_rf_command("1000 21500 tng") == (1000, 21500, "tng", None)
     assert parse_rf_command("2000 39373,6 tng 02.03") == (2000, Decimal("39373.6"), "tng", date(today().year, 3, 2))
     assert parse_rf_command("1000") is None
+    assert parse_rm_command("59259,9") == (Decimal("59259.9"), None, "maybank", None)
+    assert parse_rm_command("59259.9 3100") == (Decimal("59259.9"), Decimal("3100"), "maybank", None)
+    assert parse_rm_command("59259.9 12.02") == (Decimal("59259.9"), None, "maybank", date(today().year, 2, 12))
+    assert parse_rm_command("59259.9 3100 tng 12.02") == (Decimal("59259.9"), Decimal("3100"), "tng", date(today().year, 2, 12))
+    assert parse_rm_command("") is None
 
 
 async def test_no_secret_key_disables_login(client, monkeypatch):

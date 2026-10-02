@@ -141,6 +141,38 @@ def parse_rf_command(args: str) -> tuple[Decimal, Decimal, str, date | None] | N
     return myr, rub, account, dated[0] if dated else None
 
 
+_DATE_TOKEN_RE = re.compile(r"\d{1,2}[./]\d{2}(?:[./]\d{2,4})?")
+
+
+def parse_rm_command(args: str) -> tuple[Decimal, Decimal | None, str, date | None] | None:
+    """`/rm 59259.9 [3100] [12.02] [tng]` -> (rub, myr or None, account, day): rubles went out, ringgit came in.
+    A second word that reads as a date ("12.02") is the date, not the ringgit."""
+    parts = args.replace(",", ".").split()
+    account = "maybank"
+    for word in list(parts):
+        if word.lower() in ("tng", "тнг"):
+            account = "tng"
+            parts.remove(word)
+    if not parts:
+        return None
+    try:
+        rub = to_decimal(parts[0])
+    except ValueError:
+        return None
+    rest = parts[1:]
+    myr = None
+    if rest and not (_DATE_TOKEN_RE.fullmatch(rest[0]) and _explicit_day(rest[0])):
+        try:
+            myr = to_decimal(rest[0])
+        except ValueError:
+            return None
+        rest = rest[1:]
+    if rub <= 0 or (myr is not None and myr <= 0):
+        return None
+    dated = _explicit_day(" ".join(rest)) if rest else None
+    return rub, myr, account, dated[0] if dated else None
+
+
 CRYPTO_AMOUNT_RE = re.compile(
     r"^(?:(?P<pre>[A-Za-z][A-Za-z0-9]{1,9})\s*)?(?P<num>\d[\d\s.,]*)(?:\s*(?P<post>[A-Za-z][A-Za-z0-9]{1,9}))?$"
 )

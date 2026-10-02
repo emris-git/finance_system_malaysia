@@ -37,7 +37,7 @@ from finance.models import (
     Transaction,
 )
 from finance.parsers import MAX_FILE_BYTES, ParseError, parse_file
-from finance.quick_entry import KNOWN_COINS, parse_crypto_amount, parse_entry, parse_rf_command
+from finance.quick_entry import KNOWN_COINS, parse_crypto_amount, parse_entry, parse_rf_command, parse_rm_command
 from finance.screenshot import Payment, ScreenshotError
 from finance.utils import cycle_ending_in, fmt_day, fmt_money, to_decimal, today
 from finance.web.auth import login_enabled, magic_link
@@ -60,6 +60,8 @@ HELP = """💰 <b>Финансовый бот</b>
 <b>Перевод на РФ</b> (отдал ринггиты — получил рубли):
 • в /review нажми 🇷🇺 у перевода и напиши, сколько ₽ пришло
 • или сразу: <code>/rf 1000 21500</code> (<code>/rf 1000 21500 24.09</code> — с датой, <code>… tng</code> — если платил с TNG)
+
+<b>Обмен рублей на ринггиты</b> (отдал рубли — получил ринггиты): <code>/rm 59259.9 3100</code>, с датой <code>/rm 59259.9 3100 12.02</code>; если поступление уже в выписке, сумму RM можно не писать.
 
 <b>Вернули ринггитами за рубли</b> (заплатил рублями за кого-то или перевёл ему рубли): в /review у поступления нажми
 • ↩️ «Возврат за расход в ₽» и выбери рублёвый расход — он перестанет считаться твоим
@@ -308,6 +310,41 @@ async def cmd_rf(message: Message, session: AsyncSession, command: CommandObject
     else:
         tail = "Нашёл этот перевод в выписке и привязал."
     await message.answer(f"🇷🇺 Записал: {fmt_money(myr)} → {fmt_money(rub, 'RUB')} (курс {transfer.rate:.2f}).\n{tail}")
+
+
+@router.message(Command("rm"))
+async def cmd_rm(message: Message, session: AsyncSession, command: CommandObject) -> None:
+    parsed = parse_rm_command(command.args or "")
+    if not parsed:
+        await message.answer(
+            "Формат: <code>/rm 59259.9 3100</code> — ₽ ушло, RM пришло. Сумму RM можно не писать, если поступление уже в выписке. "
+            "Добавь дату <code>12.02</code>, если обмен был раньше, и <code>tng</code>, если ринггиты пришли на TNG."
+        )
+        return
+    rub, myr, account, day = parsed
+    duplicate = await ledger.find_fx_back_duplicate(session, rub, day)
+    if duplicate:
+        out, myr_leg = duplicate
+        got = f" → {fmt_money(myr_leg.amount)}" if myr_leg else ""
+        await message.answer(
+            f"↩️ Такой обмен уже записан: {fmt_money(-out.amount, 'RUB')}{got}, {fmt_day(out.booked_on)}. Ничего не добавил.\n"
+            "Если это другой обмен на ту же сумму, укажи другую дату."
+        )
+        return
+    try:
+        transfer = await ledger.record_fx_back(session, rub, myr, account, day)
+    except ledger.LedgerError as exc:
+        await message.answer(f"↩️ {escape(str(exc))}")
+        return
+    legs = await ledger.transfer_legs(session, transfer.id)
+    into = next(leg for leg in legs if leg.amount > 0)
+    rate = rub / into.amount
+    tail = (
+        f"Когда придёт выписка {'TNG' if account == 'tng' else 'Maybank'}, поступление подтвердится само."
+        if into.status == PENDING
+        else "Нашёл поступление в выписке и привязал."
+    )
+    await message.answer(f"↩️ Записал: {fmt_money(rub, 'RUB')} → {fmt_money(into.amount)} (курс {rate:.2f}).\n{tail}")
 
 
 @router.message(Command("balance"))
