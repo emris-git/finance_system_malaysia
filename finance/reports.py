@@ -476,32 +476,55 @@ async def monthly_series(session: AsyncSession, currency: str, months: int = 12)
             else_=Transaction.booked_on,
         )
     month = func.to_char(booked, "YYYY-MM")
+    # ruble expenses join the ringgit chart, converted at that month's own RF-transfer rate
+    currencies = (currency, "RUB") if currency == "MYR" else (currency,)
     rows = await session.execute(
-        select(month, Transaction.kind, Category.code, func.sum(Transaction.amount))
+        select(month, Account.currency, Transaction.kind, Category.code, func.sum(Transaction.amount))
         .join(Account, Account.id == Transaction.account_id)
         .outerjoin(Category, Category.id == Transaction.category_id)
         .where(
             _live(cycles[0][0], today()),
-            Account.currency == currency,
+            Account.currency.in_(currencies),
             Transaction.kind.in_((EXPENSE, INCOME)),
         )
-        .group_by(month, Transaction.kind, Category.code)
+        .group_by(month, Account.currency, Transaction.kind, Category.code)
     )
     by_month: dict[str, dict] = {}
     for start, end in cycles:
         key = end.strftime("%Y-%m")
         by_month[key] = {"month": key, "start": start, "end": end, "expense": ZERO, "income": ZERO, "categories": {}}
-    for key, kind, code, amount in rows:
+    rates = await _monthly_rub_rates(session, cycles) if "RUB" in currencies else {}
+    for key, cur, kind, code, amount in rows:
         bucket = by_month.get(key)
         if bucket is None:
             continue
         amount = Decimal(amount)
+        if cur != currency:  # rubles inside the ringgit chart
+            rate = rates.get(key)
+            if kind != EXPENSE or not rate:
+                continue
+            amount = amount / rate
+            bucket["rub_rate"] = rate
         if kind == EXPENSE:
             bucket["expense"] += -amount
             bucket["categories"][code or "other"] = bucket["categories"].get(code or "other", ZERO) - amount
         else:
             bucket["income"] += amount
     return list(by_month.values())
+
+
+async def _monthly_rub_rates(session: AsyncSession, cycles: list[tuple[date, date]]) -> dict[str, Decimal]:
+    """RUB per MYR for each financial month from its RF transfers; a month without any takes the
+    nearest earlier month's rate (the nearest later one for the first months)."""
+    own = {end.strftime("%Y-%m"): await fx_rate_between(session, start, end) for start, end in cycles}
+    keys = list(own)
+    rates: dict[str, Decimal] = {}
+    for i, key in enumerate(keys):
+        nearest = (key, *reversed(keys[:i]), *keys[i + 1 :])
+        rate = next((own[k] for k in nearest if own[k]), None)
+        if rate:
+            rates[key] = rate
+    return rates
 
 
 async def daily_series(session: AsyncSession, start: date, end: date, currency: str) -> list[dict]:
